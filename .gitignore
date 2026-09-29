@@ -1,0 +1,38 @@
+# macOS System & Cache Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Icon\r\r
+
+# macOS volume / network metadata
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows thumbnails
+Thumbs.db
+ehthumbs.db
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Editor / IDE artifacts
+.vscode/
+.idea/
+*.swp
+*.swo

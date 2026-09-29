@@ -1,0 +1,130 @@
+{
+  "manifest_version": "1.0",
+  "extension_id": "zigbee-manager",
+  "name": "Zigbee2MQTT Manager",
+  "version": "1.0.0",
+  "author": "E-Connect Team",
+  "description": "Quản lý USB Zigbee Coordinator và tích hợp các thiết bị con Zigbee thông qua Zigbee2MQTT",
+  "provider": {
+    "key": "zigbee2mqtt",
+    "display_name": "Zigbee2MQTT"
+  },
+  "package": {
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "hooks": {
+      "validate_command": "validate_command",
+      "execute_command": "execute_command",
+      "probe_state": "probe_state",
+      "discover_devices": "discover_devices"
+    }
+  },
+  "device_schemas": [
+    {
+      "schema_id": "zigbee_coordinator",
+      "device_type": "hub",
+      "name": "Zigbee Coordinator",
+      "default_name": "Zigbee Coordinator",
+      "description": "Bộ điều khiển mạng lưới Zigbee qua cổng USB vật lý",
+      "display": {
+        "card_type": "sensor",
+        "capabilities": ["value"]
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "usb_port",
+            "type": "string",
+            "label": "Địa chỉ cổng USB (VD: /dev/ttyUSB0)",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "schema_id": "zigbee_switch",
+      "device_type": "switch",
+      "name": "Zigbee Switch/Plug",
+      "default_name": "Công tắc Zigbee",
+      "description": "Ổ cắm thông minh hoặc công tắc điều khiển bật/tắt thiết bị",
+      "display": {
+        "card_type": "switch",
+        "capabilities": ["power"]
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "ieee_address",
+            "type": "string",
+            "label": "IEEE Address (VD: 0x00124b001cd45b73)",
+            "required": true
+          },
+          {
+            "key": "friendly_name",
+            "type": "string",
+            "label": "Friendly Name trong Zigbee2MQTT",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "schema_id": "zigbee_sensor",
+      "device_type": "sensor",
+      "name": "Zigbee Sensor",
+      "default_name": "Cảm biến Zigbee",
+      "description": "Cảm biến nhiệt độ, độ ẩm hoặc chuyển động Zigbee",
+      "display": {
+        "card_type": "sensor",
+        "capabilities": ["value"]
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "ieee_address",
+            "type": "string",
+            "label": "IEEE Address (VD: 0x00124b001cd45b73)",
+            "required": true
+          },
+          {
+            "key": "friendly_name",
+            "type": "string",
+            "label": "Friendly Name trong Zigbee2MQTT",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "schema_id": "zigbee_light",
+      "device_type": "light",
+      "name": "Zigbee Light",
+      "default_name": "Đèn Zigbee",
+      "description": "Bóng đèn màu hoặc bóng đèn điều chỉnh độ sáng/nhiệt độ màu Zigbee",
+      "display": {
+        "card_type": "light",
+        "capabilities": ["power", "brightness", "rgb", "color_temperature"],
+        "temperature_range": {
+          "min": 2000,
+          "max": 6500
+        }
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "ieee_address",
+            "type": "string",
+            "label": "IEEE Address (VD: 0x00124b001cd45b73)",
+            "required": true
+          },
+          {
+            "key": "friendly_name",
+            "type": "string",
+            "label": "Friendly Name trong Zigbee2MQTT",
+            "required": true
+          }
+        ]
+      }
+    }
+  ]
+}

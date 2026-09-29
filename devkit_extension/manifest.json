@@ -1,0 +1,34 @@
+{
+  "manifest_version": "1.0",
+  "extension_id": "devkit_debug",
+  "name": "E-Connect DevKit Debugger",
+  "version": "1.0.0",
+  "description": "DevKit Extension. Cung cấp Dashboard theo dõi dữ liệu raw từ Server (validate_command, execute_command, probe_state) theo thời gian thực.\n\nHướng dẫn truy cập:\n Truy cập vào web browser theo đường dẫn: http://&lt;IP_Server_E_Connect&gt;:8000/devkit",
+  "author": "E-Connect",
+  "provider": {
+    "key": "developer_toolkit",
+    "display_name": "Developer Toolkit"
+  },
+  "package": {
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "hooks": {
+      "validate_command": "on_validate_command",
+      "execute_command": "on_execute_command",
+      "probe_state": "on_probe_state"
+    }
+  },
+  "device_schemas": [
+    {
+      "schema_id": "devkit_full_widgets",
+      "name": "DevKit Full Widgets Panel",
+      "display": {
+        "card_type": "light",
+        "capabilities": ["power", "brightness", "rgb", "color_temperature"]
+      },
+      "config_schema": {
+        "fields": []
+      }
+    }
+  ]
+}
