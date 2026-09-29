@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "verified_organizations": [
+    "E-Connect",
+    "E-Connect Team"
+  ],
+  "verified_developers": [
+    "Experience",
+    "Furuhonya",
+    "ryzen30xx"
+  ],
+  "policy": {
+    "allow_community_authors": true,
+    "require_author_field": true,
+    "min_author_length": 2,
+    "max_author_length": 100,
+    "disallowed_placeholders": [
+      "unknown",
+      "null",
+      "undefined",
+      "anonymous",
+      "placeholder",
+      "n/a",
+      "none",
+      "test",
+      "tester",
+      "admin",
+      "root",
+      "sample",
+      "example"
+    ]
+  }
+}

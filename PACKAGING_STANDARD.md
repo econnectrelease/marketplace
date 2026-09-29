@@ -1,49 +1,73 @@
-# Quy Chuẩn Đóng Gói Tiện Ích Mở Rộng (E-Connect Extension Packaging Standard)
+# Quy Chuẩn Đóng Gói & Bảo Mật Tiện Ích Mở Rộng (E-Connect Extension Standard)
 
-Tài liệu này xác định quy chuẩn kỹ thuật bắt buộc để đóng gói các tiện ích mở rộng (extensions) trước khi đưa lên E-Connect Marketplace (`econnectrelease/marketplace`).
+Tài liệu này xác định quy chuẩn kỹ thuật bắt buộc để đóng gói, kiểm tra bảo mật và phòng chống mã độc (anti-malware) đối với các tiện ích mở rộng (extensions) trước khi đưa lên E-Connect Marketplace (`econnectrelease/marketplace`).
 
 ---
 
 ## 1. Nguyên Tắc Cốt Lõi
 
 1. **Chỉ đẩy tệp nén (`*.zip`)**: Kho lưu trữ Marketplace chỉ chấp nhận các tệp tiện ích đã được đóng gói dưới định dạng `*.zip`. Mã nguồn giải nén trên máy phát triển được tự động loại bỏ thông qua [`.gitignore`](.gitignore).
-2. **Không chứa rác hệ điều hành**: Tuyệt đối không để lọt tệp siêu dữ liệu macOS (`.DS_Store`, `__MACOSX/`, `._*`) hoặc Windows (`Thumbs.db`).
-3. **Không chứa cache/build artifacts**: Không chứa `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.vscode/`, `.idea/`.
-4. **Giới hạn dung lượng**: Dung lượng tệp `.zip` không được vượt quá **5 MB** (`MAX_EXTENSION_ARCHIVE_BYTES`).
-5. **CI Tự động kiểm duyệt**: Mọi Pull Request hoặc commit lên Marketplace bắt buộc phải vượt qua GitHub Action `validate-extensions.yml`.
+2. **Cơ chế Selective Unpack trên CI**: Mỗi khi có commit hoặc Pull Request, GitHub Runner **chỉ unpack các extensions mới hoặc có sửa đổi** để kiểm tra, tránh tốn tài nguyên và hạn chế rủi ro mở rộng.
+3. **Kiểm tra tác giả (`author`) bắt buộc**: Trường `author` phải có thực, không dùng placeholder ẩn danh, và được đối chiếu với cơ sở dữ liệu tác giả tin cậy [`.github/trusted_authors.json`](.github/trusted_authors.json).
+4. **Chống mã độc và cô lập Sandbox (Anti-Malware Sandbox)**: Mọi tệp Python trong gói nén đều được phân tích AST (Abstract Syntax Tree) để phát hiện và ngăn chặn mã độc nhúng vào hệ điều hành.
+5. **Không chứa rác hệ điều hành & cache**: Tuyệt đối không để lọt tệp siêu dữ liệu macOS (`.DS_Store`, `__MACOSX/`, `._*`) hoặc Windows (`Thumbs.db`), `__pycache__/`, `*.pyc`.
+6. **Giới hạn dung lượng an toàn**: Dung lượng tệp `.zip` tối đa **5 MB**, dung lượng giải nén tối đa **25 MB**, tỷ lệ nén chống Zip-Bomb tối đa **100x**.
 
 ---
 
-## 2. Cấu Trúc Đóng Gói Chuẩn Trong Tệp ZIP
+## 2. Quy Chuẩn Tác Giả (`author`)
+
+Tệp `manifest.json` bắt buộc khai báo trường `author` hợp lệ:
+- **Độ dài**: Từ 2 đến 100 ký tự.
+- **Nghiêm cấm placeholder**: Tuyệt đối cấm các giá trị ẩn danh hoặc giả mạo như `unknown`, `null`, `undefined`, `anonymous`, `test`, `admin`, `root`, `n/a`, `placeholder`.
+- **Phân loại tác giả**:
+  - `VERIFIED ORGANIZATION (Official)`: Tổ chức chính thức (`E-Connect`, `E-Connect Team`).
+  - `VERIFIED DEVELOPER (Partner)`: Các nhà phát triển đối tác đã qua xác minh (`Experience`, `Furuhonya`, `ryzen30xx`).
+  - `COMMUNITY DEVELOPER (Unverified)`: Tác giả tự do trong cộng đồng. Được chấp nhận nhưng phải vượt qua toàn bộ các bài kiểm tra bảo mật nghiêm ngặt.
+
+---
+
+## 3. Quy Chuẩn Bảo Mật & Chống Mã Độc (Anti-Malware Policy)
+
+Tiện ích E-Connect được thiết kế để giao tiếp với thiết bị IoT (qua HTTP, LAN socket, MQTT, Serial). Tiện ích **KHÔNG ĐƯỢC PHÉP** can thiệp vào hệ thống máy chủ host. Bộ quét AST sẽ tự động đánh trượt và từ chối gói nếu phát hiện:
+
+| Danh Mục Nguy Hiểm | Hành Vi Bị Cấm Tuyệt Đối | Lý Do Cấm |
+|---|---|---|
+| **Thực thi lệnh hệ điều hành** | `subprocess` (`Popen`, `run`, `call`), `os.system()`, `os.popen*()`, `os.spawn*()`, `os.exec*()`, `pty.spawn()` | Ngăn chặn mã độc mở terminal shell hoặc chạy lệnh Linux tùy ý trên máy chủ. |
+| **Thực thi mã động** | `eval()`, `exec()`, `compile()`, `__import__()` động | Ngăn chặn kỹ thuật làm rối mã (obfuscation) để tải payload độc hại từ xa. |
+| **Đánh cắp dữ liệu máy chủ** | Chuỗi đường dẫn nhắm vào `/etc/passwd`, `/etc/shadow`, `/etc/econnect`, `/var/lib/econnect`, `/var/run/docker.sock`, `.ssh/` | Bảo vệ thông tin đăng nhập, token JWT và khóa SSH của máy chủ TV Box / Home Server. |
+| **Reverse Shell** | Sử dụng `os.dup2()` nối socket với stdin/stdout | Ngăn chặn mở cổng kết nối ngầm (backdoor) ra máy chủ của hacker. |
+| **Can thiệp bộ nhớ & Keylogger** | `ctypes`, `pynput`, `keyboard`, `scapy` | Tránh can thiệp kernel, rà quét bàn phím hoặc tiêm gói tin nguy hiểm. |
+| **Zip-Slip & Path Traversal** | Tệp nén chứa tên đường dẫn dạng `../../` hoặc đường dẫn tuyệt đối | Ngăn chặn ghi đè tệp hệ thống ngoài thư mục giải nén. |
+
+---
+
+## 4. Cấu Trúc Đóng Gói Chuẩn Trong Tệp ZIP
 
 Hệ thống E-Connect hỗ trợ 2 mô hình đóng gói sau:
 
 ### Dạng 1: Thư mục đơn cấp (Khuyến nghị cho Marketplace)
-Tất cả mã nguồn nằm bên trong một thư mục mang tên tiện ích:
 ```text
 my_extension.zip
 └── my_extension/
     ├── manifest.json
     ├── main.py
-    └── helper.py (nếu có)
+    └── helper.py
 ```
 
 ### Dạng 2: Gốc trực tiếp (Flat Root)
-Các tệp nằm trực tiếp tại thư mục gốc của tệp ZIP:
 ```text
 my_extension.zip
 ├── manifest.json
 ├── main.py
-└── helper.py (nếu có)
+└── helper.py
 ```
 
-> **LƯU Ý:** Gói ZIP phải chứa **duy nhất 1 tệp `manifest.json`**. Không được lồng sâu quá 1 cấp thư mục.
+> **LƯU Ý:** Gói ZIP phải chứa **duy nhất 1 tệp `manifest.json`**. Tệp chỉ định tại `package.entrypoint` bắt buộc phải tồn tại trong gói.
 
 ---
 
-## 3. Quy Chuẩn `manifest.json` (Phiên Bản 1.0)
-
-Tệp `manifest.json` bắt buộc mã hóa UTF-8 và tuân thủ schema:
+## 5. Quy Chuẩn `manifest.json` (Phiên Bản 1.0)
 
 ```json
 {
@@ -51,7 +75,7 @@ Tệp `manifest.json` bắt buộc mã hóa UTF-8 và tuân thủ schema:
   "extension_id": "my_extension",
   "name": "My Extension Name",
   "version": "1.0.0",
-  "author": "Author Name",
+  "author": "E-Connect Team",
   "description": "Mô tả ngắn gọn chức năng của tiện ích",
   "provider": {
     "key": "my_provider",
@@ -90,30 +114,13 @@ Tệp `manifest.json` bắt buộc mã hóa UTF-8 và tuân thủ schema:
 }
 ```
 
-### Các trường bắt buộc:
-| Trường | Kiểu dữ liệu | Ràng buộc |
-|---|---|---|
-| `manifest_version` | String | Bắt buộc `"1.0"` |
-| `extension_id` | String | Lowercase slug `^[a-z0-9][a-z0-9_-]{1,119}$` |
-| `name` | String | Không được rỗng |
-| `version` | String | Chuẩn Semantic Versioning (ví dụ: `1.0.0`) |
-| `description` | String | Không được rỗng |
-| `provider.key` | String | Lowercase slug |
-| `provider.display_name` | String | Tên nhà cung cấp hiển thị trên WebApp |
-| `package.runtime` | String | Bắt buộc `"python"` |
-| `package.entrypoint` | String | Tên tệp script khởi chạy (phải tồn tại thực tế trong zip) |
-| `package.hooks` | Object | Tên hàm Python: `validate_command`, `execute_command`, `probe_state` |
-| `device_schemas` | Array | Tối thiểu 1 schema thiết bị hợp lệ |
-
 ---
 
-## 4. Hướng Dẫn Đóng Gói Bằng Dòng Lệnh (CLI)
+## 6. Hướng Dẫn Đóng Gói Bằng Dòng Lệnh (CLI)
 
-### Trên macOS (Cực kỳ quan trọng: Dùng cờ `-X`)
-Khi nén trên macOS, tiện ích `zip` mặc định sẽ đính kèm siêu dữ liệu HFS+ (tạo ra thư mục rác `__MACOSX/` và các file `._*`). Bắt buộc sử dụng cờ `-X` để loại bỏ:
-
+### Trên macOS (Bắt buộc dùng cờ `-X` để loại bỏ `__MACOSX/`)
 ```bash
-# Cách 1: Nén thư mục my_extension thành my_extension.zip
+# Cách 1: Nén từ thư mục cha
 zip -r -X my_extension.zip my_extension/ -x "*.DS_Store" -x "__MACOSX*" -x "*/__pycache__/*" -x "*.pyc"
 
 # Cách 2: Nén từ bên trong thư mục
@@ -128,16 +135,17 @@ zip -r my_extension.zip my_extension/ -x "*.DS_Store" -x "*/__pycache__/*" -x "*
 
 ---
 
-## 5. Tự Kiểm Tra Trước Khi Commit (Local Validation)
+## 7. Tự Kiểm Tra & Audit Trước Khi Đẩy Lên Repo
 
-Chạy trực tiếp công cụ kiểm tra tự động trước khi commit:
+Chạy trực tiếp công cụ kiểm tra bảo mật và unpack tại local:
 
 ```bash
-python3 .github/scripts/validate_extensions.py .
-```
+# Chỉ unpack và audit các tiện ích vừa sửa đổi/thêm mới (giống cơ chế GitHub Actions):
+python3 .github/scripts/validate_extensions.py --changed-only
 
-Nếu kết quả hiển thị:
-```text
-🎉 All X extension package(s) PASSED validation! Ready for Marketplace.
+# Hoặc kiểm tra một tệp zip cụ thể:
+python3 .github/scripts/validate_extensions.py my_extension.zip
+
+# Hoặc kiểm tra toàn bộ:
+python3 .github/scripts/validate_extensions.py --all
 ```
-Bạn đã hoàn tất quy chuẩn và an toàn đẩy lên kho lưu trữ.

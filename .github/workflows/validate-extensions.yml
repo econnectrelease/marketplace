@@ -1,4 +1,4 @@
-name: Validate Extensions Packaging
+name: Validate Extensions Packaging & Security
 
 on:
   push:
@@ -6,25 +6,50 @@ on:
   pull_request:
     branches: [ main, dev ]
   workflow_dispatch:
+    inputs:
+      audit_scope:
+        description: "Scope of audit: 'changed' (only modified extensions) or 'all' (all extensions in repository)"
+        required: true
+        default: "changed"
+        type: choice
+        options:
+          - changed
+          - all
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-packages:
-    name: Validate Extension ZIP Packages
+  audit-extensions:
+    name: Unpack, Validate & Security Audit
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository with full history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Run Extension Packaging & Schema Validator
+      - name: Install Security Scanners (Bandit)
         run: |
-          python3 .github/scripts/validate_extensions.py .
+          python3 -m pip install --upgrade pip
+          python3 -m pip install bandit
+
+      - name: Run Selective Unpack, Format Verification & Malware Audit
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_BEFORE: ${{ github.event.before }}
+          AUDIT_SCOPE: ${{ inputs.audit_scope || 'changed' }}
+        run: |
+          if [ "$AUDIT_SCOPE" = "all" ]; then
+            python3 .github/scripts/validate_extensions.py --all
+          else
+            python3 .github/scripts/validate_extensions.py --changed-only
+          fi
