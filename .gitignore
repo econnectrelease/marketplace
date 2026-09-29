@@ -36,3 +36,31 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+
+# ============================================================
+# Extension Packaging Rules
+# ONLY zipped extensions (*.zip) are allowed to be committed.
+# Unzipped source folders, loose scripts, and temporary files
+# must NOT be committed.
+# ============================================================
+
+# Ignore all directories by default
+/*/
+
+# Ignore common loose source and data files at root
+*.py
+*.json
+*.sh
+*.log
+*.tmp
+*.bak
+
+# Explicitly allow repository configs, docs, and zipped extensions
+!*.zip
+!*.md
+!.gitignore
+!LICENSE
+
+# Explicitly allow GitHub Actions workflows & CI scripts
+!/.github/
+!/.github/**
