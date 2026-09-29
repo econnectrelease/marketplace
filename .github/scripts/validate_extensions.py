@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 E-Connect Project. All rights reserved.
 """
-Selective Extension Unpack, Format Compliance & Deep Security Audit CLI
+Selective Extension Format Compliance & Deep Security Audit CLI
 for E-Connect Marketplace (econnectrelease/marketplace).
 
 Validates:
-1. Selective unpacking (only added/modified extensions are unpacked).
-2. Archive safety (Anti-ZipSlip, Anti-ZipBomb, size limits).
-3. Manifest schema & author authenticity against trusted registry.
-4. E-Connect extension format compatibility (hooks, schemas, entrypoint).
-5. Deep malware & AST security inspection (blocks subprocess, eval/exec,
+1. Directory-based extension structure (unpacked folders, no zip archives).
+2. Direct discovery via root manifest.json in each extension directory.
+3. Clean repository hygiene (blocks OS metadata, cache files, and archives).
+4. Manifest schema & author authenticity against trusted registry.
+5. E-Connect extension format compatibility (hooks, schemas, entrypoint).
+6. Deep malware & AST security inspection (blocks subprocess, eval/exec,
    host credential theft, reverse shells, keyloggers).
-6. Bandit automated security scanning on extracted Python sources.
+7. Bandit automated security scanning on Python sources.
 """
 
 from __future__ import annotations
@@ -19,24 +20,19 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
-import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
-import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 # ==============================================================================
 # Constants & Constraints
 # ==============================================================================
-MAX_ARCHIVE_BYTES = 5 * 1024 * 1024  # 5 MB max archive size
-MAX_UNCOMPRESSED_BYTES = 25 * 1024 * 1024  # 25 MB max uncompressed size
-MAX_COMPRESSION_RATIO = 100.0  # Anti-ZipBomb limit
+MAX_EXTENSION_BYTES = 25 * 1024 * 1024  # 25 MB max uncompressed directory size
 
 IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,119}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,59}$")
@@ -55,6 +51,7 @@ FORBIDDEN_FILE_PATTERNS = [
     (re.compile(r"\.py[cod]$"), "Python compiled bytecode (*.pyc, *.pyo, *.pyd)"),
     (re.compile(r"(^|/)\.git($|/)"), "Git metadata directory"),
     (re.compile(r"(^|/)(\.vscode|\.idea)($|/)"), "IDE workspace settings"),
+    (re.compile(r"\.(zip|tar|gz|tgz|rar|7z)$", re.IGNORECASE), "Archived package file (Extensions must be uncompressed folders)"),
 ]
 
 # Prohibited Process Execution APIs
@@ -221,12 +218,12 @@ class ASTSecurityVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def audit_python_files(extract_dir: Path) -> list[str]:
+def audit_python_files(ext_dir: Path) -> list[str]:
     security_issues: list[str] = []
-    py_files = sorted(extract_dir.rglob("*.py"))
+    py_files = sorted(ext_dir.rglob("*.py"))
 
     for py_file in py_files:
-        rel = py_file.relative_to(extract_dir).as_posix()
+        rel = py_file.relative_to(ext_dir).as_posix()
         try:
             content = py_file.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
@@ -246,7 +243,7 @@ def audit_python_files(extract_dir: Path) -> list[str]:
     return security_issues
 
 
-def run_bandit_audit(extract_dir: Path) -> list[str]:
+def run_bandit_audit(ext_dir: Path) -> list[str]:
     """Runs bandit security scanner if installed; flags High-severity CVEs."""
     bandit_bin = shutil.which("bandit")
     if not bandit_bin:
@@ -254,7 +251,7 @@ def run_bandit_audit(extract_dir: Path) -> list[str]:
 
     try:
         proc = subprocess.run(
-            [bandit_bin, "-r", str(extract_dir), "-lll", "-f", "json", "-q"],
+            [bandit_bin, "-r", str(ext_dir), "-lll", "-f", "json", "-q"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -263,7 +260,7 @@ def run_bandit_audit(extract_dir: Path) -> list[str]:
             data = json.loads(proc.stdout)
             issues = []
             for item in data.get("results", []):
-                rel = Path(item.get("filename", "")).relative_to(extract_dir).as_posix()
+                rel = Path(item.get("filename", "")).relative_to(ext_dir).as_posix()
                 issues.append(
                     f"[{rel}:{item.get('line_number')}] Bandit {item.get('test_id')} (High): {item.get('issue_text')}"
                 )
@@ -274,224 +271,195 @@ def run_bandit_audit(extract_dir: Path) -> list[str]:
 
 
 # ==============================================================================
-# Unpacking & Format Validation
+# Extension Folder Validation
 # ==============================================================================
-def unpack_and_validate_extension(zip_path: Path, authors_config: dict[str, Any]) -> dict[str, Any]:
-    file_bytes = zip_path.read_bytes()
-    size_bytes = len(file_bytes)
+def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) -> dict[str, Any]:
+    if not ext_dir.is_dir():
+        raise ValueError(f"'{ext_dir.name}' is not a directory.")
 
-    if size_bytes == 0:
-        raise ValueError(f"{zip_path.name}: Archive is empty (0 bytes).")
-    if size_bytes > MAX_ARCHIVE_BYTES:
+    # 1. Check directory size and file hygiene
+    total_bytes = 0
+    all_files: list[Path] = []
+    for item in ext_dir.rglob("*"):
+        if item.is_file():
+            file_size = item.stat().st_size
+            total_bytes += file_size
+            all_files.append(item)
+
+        # Check for forbidden files / directories
+        rel_posix = item.relative_to(ext_dir).as_posix()
+        for pattern, desc in FORBIDDEN_FILE_PATTERNS:
+            if pattern.search(rel_posix):
+                raise ValueError(
+                    f"{ext_dir.name}: Forbidden item '{rel_posix}' ({desc}). Must be cleaned before committing."
+                )
+
+    if total_bytes > MAX_EXTENSION_BYTES:
         raise ValueError(
-            f"{zip_path.name}: Archive size ({round(size_bytes / 1024, 2)} KB) exceeds 5 MB limit."
+            f"{ext_dir.name}: Extension folder size ({round(total_bytes / (1024 * 1024), 2)} MB) exceeds 25 MB limit."
         )
+
+    # 2. Locate and parse manifest.json
+    manifest_path = ext_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"{ext_dir.name}: 'manifest.json' is missing from the extension folder.")
 
     try:
-        zf = zipfile.ZipFile(io.BytesIO(file_bytes))
-    except zipfile.BadZipFile as exc:
-        raise ValueError(f"{zip_path.name}: Corrupted or invalid ZIP file: {exc}")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{ext_dir.name}: manifest.json must be UTF-8 encoded: {exc}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{ext_dir.name}: manifest.json invalid JSON syntax: {exc}")
 
-    # Anti-ZipSlip and Anti-ZipBomb checks
-    total_uncompressed = 0
-    infolist = zf.infolist()
-    for info in infolist:
-        total_uncompressed += info.file_size
-        clean_path = PurePosixPath(info.filename)
-        if clean_path.is_absolute() or ".." in clean_path.parts:
-            raise ValueError(f"{zip_path.name}: Zip-Slip vulnerability detected in member '{info.filename}'.")
+    if not isinstance(manifest_data, dict):
+        raise ValueError(f"{ext_dir.name}: manifest.json must be a JSON object.")
 
-    if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+    # 3. Check manifest_version
+    if manifest_data.get("manifest_version") != "1.0":
         raise ValueError(
-            f"{zip_path.name}: Uncompressed size ({total_uncompressed} bytes) exceeds safety limit (25 MB)."
+            f"{ext_dir.name}: Unsupported manifest_version '{manifest_data.get('manifest_version')}'. Expected '1.0'."
         )
 
-    ratio = (total_uncompressed / max(size_bytes, 1))
-    if ratio > MAX_COMPRESSION_RATIO:
+    # 4. Check extension_id
+    ext_id = str(manifest_data.get("extension_id", "")).strip().lower()
+    if not IDENTIFIER_PATTERN.fullmatch(ext_id):
         raise ValueError(
-            f"{zip_path.name}: Suspicious compression ratio ({ratio:.1f}x) exceeds limit (100x). Possible ZipBomb."
+            f"{ext_dir.name}: Invalid extension_id '{ext_id}'. Must be lowercase slug ^[a-z0-9][a-z0-9_-]{{1,119}}$."
         )
 
-    # Check for forbidden OS/cache files inside zip entries
-    for info in infolist:
-        name = info.filename
-        for pattern, desc in FORBIDDEN_FILE_PATTERNS:
-            if pattern.search(name):
-                raise ValueError(
-                    f"{zip_path.name}: Forbidden entry '{name}' ({desc}). Must be excluded when building zip."
-                )
+    # 5. Check author authenticity
+    author, author_status = validate_author(manifest_data.get("author"), authors_config)
 
-    # Perform Sandboxed Extraction
-    with tempfile.TemporaryDirectory(prefix=f"econnect_ext_{zip_path.stem}_") as temp_dir_str:
-        temp_dir = Path(temp_dir_str)
-        zf.extractall(temp_dir)
+    # 6. Check name, version, description
+    name = str(manifest_data.get("name", "")).strip()
+    version = str(manifest_data.get("version", "")).strip()
+    description = str(manifest_data.get("description", "")).strip()
+    if not name:
+        raise ValueError(f"{ext_dir.name}: 'name' is required.")
+    if not version:
+        raise ValueError(f"{ext_dir.name}: 'version' is required.")
+    if not description:
+        raise ValueError(f"{ext_dir.name}: 'description' is required.")
 
-        # Locate manifest.json
-        manifest_files = list(temp_dir.rglob("manifest.json"))
-        if not manifest_files:
-            raise ValueError(f"{zip_path.name}: 'manifest.json' not found in unpacked files.")
-        if len(manifest_files) > 1:
-            raise ValueError(f"{zip_path.name}: Multiple 'manifest.json' files found ({len(manifest_files)}).")
+    # 7. Check provider
+    provider = manifest_data.get("provider")
+    if not isinstance(provider, dict):
+        raise ValueError(f"{ext_dir.name}: 'provider' object is required.")
+    provider_key = str(provider.get("key", "")).strip().lower()
+    provider_display = str(provider.get("display_name", "")).strip()
+    if not IDENTIFIER_PATTERN.fullmatch(provider_key):
+        raise ValueError(f"{ext_dir.name}: 'provider.key' must be a valid lowercase slug.")
+    if not provider_display:
+        raise ValueError(f"{ext_dir.name}: 'provider.display_name' is required.")
 
-        manifest_path = manifest_files[0]
-        rel_manifest = manifest_path.relative_to(temp_dir)
-        if len(rel_manifest.parts) > 2:
+    # 8. Check package & entrypoint
+    pkg = manifest_data.get("package")
+    if not isinstance(pkg, dict):
+        raise ValueError(f"{ext_dir.name}: 'package' object is required.")
+    runtime = str(pkg.get("runtime", "")).strip().lower()
+    if runtime != "python":
+        raise ValueError(f"{ext_dir.name}: Unsupported package.runtime '{runtime}'. Expected 'python'.")
+
+    entrypoint = str(pkg.get("entrypoint", "")).strip()
+    if not entrypoint or PurePosixPath(entrypoint).is_absolute() or ".." in PurePosixPath(entrypoint).parts:
+        raise ValueError(f"{ext_dir.name}: Invalid entrypoint path '{entrypoint}'.")
+
+    entrypoint_file = ext_dir / entrypoint
+    if not entrypoint_file.is_file():
+        raise ValueError(
+            f"{ext_dir.name}: Entrypoint file '{entrypoint}' not found in '{ext_dir.name}/'."
+        )
+
+    # 9. Check hooks
+    hooks = pkg.get("hooks") or {}
+    if not isinstance(hooks, dict):
+        raise ValueError(f"{ext_dir.name}: 'package.hooks' must be an object.")
+    for rh in REQUIRED_HOOKS:
+        fn = hooks.get(rh, rh)
+        if not isinstance(fn, str) or not PYTHON_SYMBOL_PATTERN.fullmatch(fn.strip()):
             raise ValueError(
-                f"{zip_path.name}: manifest.json is nested too deep ('{rel_manifest}'). Max 1 folder level allowed."
+                f"{ext_dir.name}: package.hooks.{rh} ('{fn}') must be a valid Python symbol."
             )
 
-        package_root_dir = manifest_path.parent
-        package_root_name = None if len(rel_manifest.parts) == 1 else rel_manifest.parts[0]
+    # 10. Check device_schemas
+    schemas = manifest_data.get("device_schemas")
+    if not isinstance(schemas, list) or len(schemas) == 0:
+        raise ValueError(f"{ext_dir.name}: Manifest must declare at least one device schema in 'device_schemas'.")
 
-        # Parse and validate manifest.json
-        try:
-            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"{zip_path.name}: manifest.json must be UTF-8 encoded: {exc}")
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{zip_path.name}: manifest.json invalid JSON syntax: {exc}")
+    for idx, schema in enumerate(schemas):
+        if not isinstance(schema, dict):
+            raise ValueError(f"{ext_dir.name}: device_schemas[{idx}] must be an object.")
+        sid = str(schema.get("schema_id", "")).strip().lower()
+        if not IDENTIFIER_PATTERN.fullmatch(sid):
+            raise ValueError(f"{ext_dir.name}: schema_id '{sid}' must be a lowercase slug.")
+        disp = schema.get("display")
+        if not isinstance(disp, dict):
+            raise ValueError(f"{ext_dir.name}: schema '{sid}' is missing 'display' object.")
+        card_type = str(disp.get("card_type", "")).strip().lower()
+        if not IDENTIFIER_PATTERN.fullmatch(card_type):
+            raise ValueError(f"{ext_dir.name}: schema '{sid}' display.card_type '{card_type}' is invalid.")
+        caps = disp.get("capabilities")
+        if not isinstance(caps, list) or len(caps) == 0:
+            raise ValueError(f"{ext_dir.name}: schema '{sid}' display.capabilities must be a non-empty list.")
 
-        if not isinstance(manifest_data, dict):
-            raise ValueError(f"{zip_path.name}: manifest.json must be a JSON object.")
+    # 11. Deep Security & AST Inspection
+    security_findings = audit_python_files(ext_dir)
+    bandit_findings = run_bandit_audit(ext_dir)
+    all_security_issues = security_findings + bandit_findings
 
-        # Check manifest_version
-        if manifest_data.get("manifest_version") != "1.0":
-            raise ValueError(
-                f"{zip_path.name}: Unsupported manifest_version '{manifest_data.get('manifest_version')}'. Expected '1.0'."
-            )
+    if all_security_issues:
+        raise ValueError(
+            f"{ext_dir.name}: SECURITY AUDIT FAILED with {len(all_security_issues)} issue(s):\n"
+            + "\n".join(f"     ❌ {issue}" for issue in all_security_issues)
+        )
 
-        # Check extension_id
-        ext_id = str(manifest_data.get("extension_id", "")).strip().lower()
-        if not IDENTIFIER_PATTERN.fullmatch(ext_id):
-            raise ValueError(
-                f"{zip_path.name}: Invalid extension_id '{ext_id}'. Must be lowercase slug ^[a-z0-9][a-z0-9_-]{{1,119}}$."
-            )
+    py_count = len(list(ext_dir.rglob("*.py")))
 
-        # Check author
-        author, author_status = validate_author(manifest_data.get("author"), authors_config)
-
-        # Check name, version, description
-        name = str(manifest_data.get("name", "")).strip()
-        version = str(manifest_data.get("version", "")).strip()
-        description = str(manifest_data.get("description", "")).strip()
-        if not name:
-            raise ValueError(f"{zip_path.name}: 'name' is required.")
-        if not version:
-            raise ValueError(f"{zip_path.name}: 'version' is required.")
-        if not description:
-            raise ValueError(f"{zip_path.name}: 'description' is required.")
-
-        # Check provider
-        provider = manifest_data.get("provider")
-        if not isinstance(provider, dict):
-            raise ValueError(f"{zip_path.name}: 'provider' object is required.")
-        provider_key = str(provider.get("key", "")).strip().lower()
-        provider_display = str(provider.get("display_name", "")).strip()
-        if not IDENTIFIER_PATTERN.fullmatch(provider_key):
-            raise ValueError(f"{zip_path.name}: 'provider.key' must be a valid lowercase slug.")
-        if not provider_display:
-            raise ValueError(f"{zip_path.name}: 'provider.display_name' is required.")
-
-        # Check package
-        pkg = manifest_data.get("package")
-        if not isinstance(pkg, dict):
-            raise ValueError(f"{zip_path.name}: 'package' object is required.")
-        runtime = str(pkg.get("runtime", "")).strip().lower()
-        if runtime != "python":
-            raise ValueError(f"{zip_path.name}: Unsupported package.runtime '{runtime}'. Expected 'python'.")
-
-        entrypoint = str(pkg.get("entrypoint", "")).strip()
-        if not entrypoint or PurePosixPath(entrypoint).is_absolute() or ".." in PurePosixPath(entrypoint).parts:
-            raise ValueError(f"{zip_path.name}: Invalid entrypoint path '{entrypoint}'.")
-
-        entrypoint_file = package_root_dir / entrypoint
-        if not entrypoint_file.is_file():
-            raise ValueError(
-                f"{zip_path.name}: Entrypoint '{entrypoint}' not found in unpacked files (looked at '{entrypoint_file.name}')."
-            )
-
-        # Check hooks
-        hooks = pkg.get("hooks") or {}
-        if not isinstance(hooks, dict):
-            raise ValueError(f"{zip_path.name}: 'package.hooks' must be an object.")
-        for rh in REQUIRED_HOOKS:
-            fn = hooks.get(rh, rh)
-            if not isinstance(fn, str) or not PYTHON_SYMBOL_PATTERN.fullmatch(fn.strip()):
-                raise ValueError(
-                    f"{zip_path.name}: package.hooks.{rh} ('{fn}') must be a valid Python symbol."
-                )
-
-        # Check device_schemas
-        schemas = manifest_data.get("device_schemas")
-        if not isinstance(schemas, list) or len(schemas) == 0:
-            raise ValueError(f"{zip_path.name}: Manifest must declare at least one device schema in 'device_schemas'.")
-
-        for idx, schema in enumerate(schemas):
-            if not isinstance(schema, dict):
-                raise ValueError(f"{zip_path.name}: device_schemas[{idx}] must be an object.")
-            sid = str(schema.get("schema_id", "")).strip().lower()
-            if not IDENTIFIER_PATTERN.fullmatch(sid):
-                raise ValueError(f"{zip_path.name}: schema_id '{sid}' must be a lowercase slug.")
-            disp = schema.get("display")
-            if not isinstance(disp, dict):
-                raise ValueError(f"{zip_path.name}: schema '{sid}' is missing 'display' object.")
-            card_type = str(disp.get("card_type", "")).strip().lower()
-            if not IDENTIFIER_PATTERN.fullmatch(card_type):
-                raise ValueError(f"{zip_path.name}: schema '{sid}' display.card_type '{card_type}' is invalid.")
-            caps = disp.get("capabilities")
-            if not isinstance(caps, list) or len(caps) == 0:
-                raise ValueError(f"{zip_path.name}: schema '{sid}' display.capabilities must be a non-empty list.")
-
-        # DEEP SECURITY & MALWARE INSPECTION
-        security_findings = audit_python_files(temp_dir)
-        bandit_findings = run_bandit_audit(temp_dir)
-        all_security_issues = security_findings + bandit_findings
-
-        if all_security_issues:
-            raise ValueError(
-                f"{zip_path.name}: SECURITY AUDIT FAILED with {len(all_security_issues)} issue(s):\n"
-                + "\n".join(f"     ❌ {issue}" for issue in all_security_issues)
-            )
-
-        sha256 = hashlib.sha256(file_bytes).hexdigest()
-        py_count = len(list(temp_dir.rglob("*.py")))
-
-        return {
-            "name": zip_path.name,
-            "extension_id": ext_id,
-            "version": version,
-            "author": author,
-            "author_status": author_status,
-            "package_root": package_root_name,
-            "size_kb": round(size_bytes / 1024, 2),
-            "sha256": sha256,
-            "py_files_count": py_count,
-            "schemas_count": len(schemas),
-        }
+    return {
+        "folder_name": ext_dir.name,
+        "extension_id": ext_id,
+        "version": version,
+        "author": author,
+        "author_status": author_status,
+        "size_kb": round(total_bytes / 1024, 2),
+        "py_files_count": py_count,
+        "schemas_count": len(schemas),
+        "entrypoint": entrypoint,
+    }
 
 
 # ==============================================================================
-# Change Detection (Selective Unpacking)
+# Discovery & Change Detection
 # ==============================================================================
-def find_changed_zip_files(repo_root: Path, base_ref: str | None = None) -> list[Path]:
-    """Finds all *.zip files added or modified in the current branch / commit."""
-    changed_names: set[str] = set()
+def find_all_extension_dirs(repo_root: Path) -> list[Path]:
+    """Finds all root-level directories that contain a manifest.json."""
+    ext_dirs: list[Path] = []
+    for item in sorted(repo_root.iterdir()):
+        if item.is_dir() and not item.name.startswith("."):
+            manifest_file = item / "manifest.json"
+            if manifest_file.is_file():
+                ext_dirs.append(item)
+    return ext_dirs
+
+
+def find_changed_extension_dirs(repo_root: Path, base_ref: str | None = None) -> list[Path]:
+    """Finds all extension directories that have newly added or modified files."""
+    changed_rel_paths: set[str] = set()
 
     # 1. Check uncommitted / staged changes in working tree
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo_root), "status", "--porcelain", "--", "*.zip"],
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
             capture_output=True,
             text=True,
             check=False,
         )
         for line in proc.stdout.splitlines():
             line = line.strip()
-            if line and not line.startswith("D"):  # Exclude deleted
-                # Format: "XY filename" or "?? filename"
+            if line:
                 parts = line.split(None, 1)
                 if len(parts) == 2:
-                    changed_names.add(parts[1].strip('"'))
+                    changed_rel_paths.add(parts[1].strip('"'))
     except Exception:
         pass
 
@@ -500,7 +468,6 @@ def find_changed_zip_files(repo_root: Path, base_ref: str | None = None) -> list
     if base_ref:
         diff_targets.append(base_ref)
     else:
-        # Check environment variables from GitHub Actions
         env_base = os.getenv("GITHUB_BASE_REF")
         if env_base:
             diff_targets.append(f"origin/{env_base}")
@@ -511,24 +478,26 @@ def find_changed_zip_files(repo_root: Path, base_ref: str | None = None) -> list
 
     for target in diff_targets:
         try:
-            cmd = ["git", "-C", str(repo_root), "diff", "--name-only", "--diff-filter=AM", target, "HEAD", "--", "*.zip"]
+            cmd = ["git", "-C", str(repo_root), "diff", "--name-only", "--diff-filter=AM", target, "HEAD"]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode == 0:
                 for f in proc.stdout.splitlines():
                     if f.strip():
-                        changed_names.add(f.strip())
+                        changed_rel_paths.add(f.strip())
                 break
         except Exception:
             continue
 
-    # Filter to existing zip files
-    matched_zips: list[Path] = []
-    for name in changed_names:
-        p = repo_root / name
-        if p.is_file() and p.suffix.lower() == ".zip":
-            matched_zips.append(p)
+    # Map changed paths to top-level extension directories
+    changed_ext_dirs: set[Path] = set()
+    for rel in changed_rel_paths:
+        parts = Path(rel).parts
+        if len(parts) >= 2:
+            candidate_dir = repo_root / parts[0]
+            if candidate_dir.is_dir() and (candidate_dir / "manifest.json").is_file():
+                changed_ext_dirs.add(candidate_dir)
 
-    return sorted(matched_zips)
+    return sorted(list(changed_ext_dirs))
 
 
 # ==============================================================================
@@ -536,22 +505,22 @@ def find_changed_zip_files(repo_root: Path, base_ref: str | None = None) -> list
 # ==============================================================================
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="E-Connect Marketplace: Selective Extension Unpacker & Security Validator"
+        description="E-Connect Marketplace: Unpacked Extension Validator & Security Auditor"
     )
     parser.add_argument(
         "targets",
         nargs="*",
-        help="Optional specific *.zip extension files or directories to unpack and inspect.",
+        help="Optional specific extension folder(s) to inspect.",
     )
     parser.add_argument(
         "--changed-only",
         action="store_true",
-        help="Only unpack and validate extension packages that have been added or modified.",
+        help="Only validate extension folders that have been added or modified.",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Force unpack and validate all *.zip extension packages in the repository.",
+        help="Force validate all extension folders in the repository.",
     )
     parser.add_argument(
         "--base-ref",
@@ -561,63 +530,79 @@ def main() -> int:
     args = parser.parse_args()
     repo_root = Path.cwd().resolve()
 
-    # Determine files to unpack & audit
-    zips_to_audit: list[Path] = []
+    # Check for prohibited zip archives in the repo
+    prohibited_zips = sorted(repo_root.glob("*.zip"))
+    if prohibited_zips:
+        print("======================================================================")
+        print("❌ ARCHIVE POLICY VIOLATION: ZIP files are strictly prohibited!")
+        print("    Extensions must be stored directly as uncompressed folders with manifest.json.")
+        print(f"    Disallowed archive(s) found: {', '.join(z.name for z in prohibited_zips)}")
+        print("    Please delete these .zip files and keep the uncompressed directories.")
+        print("======================================================================")
+        return 1
+
+    # Determine extension directories to audit
+    exts_to_audit: list[Path] = []
 
     if args.targets:
         for t in args.targets:
             p = Path(t).resolve()
-            if p.is_file() and p.suffix.lower() == ".zip":
-                zips_to_audit.append(p)
-            elif p.is_dir():
-                zips_to_audit.extend(sorted(p.glob("*.zip")))
+            if p.is_dir():
+                if (p / "manifest.json").is_file():
+                    exts_to_audit.append(p)
+                else:
+                    # Look inside
+                    exts_to_audit.extend(find_all_extension_dirs(p))
+            elif p.is_file() and p.name == "manifest.json":
+                exts_to_audit.append(p.parent)
     elif args.changed_only:
-        zips_to_audit = find_changed_zip_files(repo_root, base_ref=args.base_ref)
-        if not zips_to_audit:
+        exts_to_audit = find_changed_extension_dirs(repo_root, base_ref=args.base_ref)
+        if not exts_to_audit:
             print("======================================================================")
-            print("ℹ️  SELECTIVE UNPACK: No extension packages (*.zip) were added or modified.")
-            print("    Zero unpack required. All existing packages remain untouched.")
+            print("ℹ️  SELECTIVE AUDIT: No extension directories were added or modified.")
+            print("    Zero audit required. All existing extensions remain untouched.")
             print("======================================================================")
             return 0
     elif args.all:
-        zips_to_audit = sorted(repo_root.glob("*.zip"))
+        exts_to_audit = find_all_extension_dirs(repo_root)
     else:
-        # Default behavior: If in CI environment, detect changed-only; otherwise check all in current dir
+        # Default behavior: If in CI environment, detect changed-only; otherwise check all in repo
         if os.getenv("CI") or os.getenv("GITHUB_ACTIONS"):
-            zips_to_audit = find_changed_zip_files(repo_root, base_ref=args.base_ref)
-            if not zips_to_audit:
+            exts_to_audit = find_changed_extension_dirs(repo_root, base_ref=args.base_ref)
+            if not exts_to_audit:
                 print("======================================================================")
-                print("ℹ️  CI SELECTIVE UNPACK: No new or modified extension packages detected.")
-                print("    Skipping unpack step. Commit is safe.")
+                print("ℹ️  CI SELECTIVE AUDIT: No new or modified extension directories detected.")
+                print("    Commit is safe.")
                 print("======================================================================")
                 return 0
         else:
-            zips_to_audit = sorted(repo_root.glob("*.zip"))
+            exts_to_audit = find_all_extension_dirs(repo_root)
 
-    if not zips_to_audit:
-        print(f"⚠️  No extension packages found in '{repo_root}'.")
+    if not exts_to_audit:
+        print(f"⚠️  No extension directories with 'manifest.json' found in '{repo_root}'.")
         return 0
 
     authors_config = load_trusted_authors_config(repo_root)
 
     print("======================================================================")
-    print(f"🛡️  E-CONNECT MARKETPLACE: EXTENSION UNPACK & SECURITY AUDITOR")
-    print(f"    Target Packages: {len(zips_to_audit)} package(s) selected for sandboxed unpacking")
+    print(f"🛡️  E-CONNECT MARKETPLACE: EXTENSION VALIDATOR & SECURITY AUDITOR")
+    print(f"    Target Extensions: {len(exts_to_audit)} folder(s) selected for audit")
     print("======================================================================")
 
     total_failed = 0
     audit_results = []
 
-    for idx, zip_path in enumerate(zips_to_audit, 1):
-        print(f"\n📦 [{idx}/{len(zips_to_audit)}] Unpacking & Auditing: {zip_path.name}")
+    for idx, ext_dir in enumerate(exts_to_audit, 1):
+        print(f"\n📂 [{idx}/{len(exts_to_audit)}] Auditing Extension Folder: {ext_dir.name}")
         print("  " + "-" * 66)
         try:
-            res = unpack_and_validate_extension(zip_path, authors_config)
+            res = validate_extension_directory(ext_dir, authors_config)
             audit_results.append(res)
-            print(f"  ✓ Integrity & Anti-ZipSlip: PASSED")
-            print(f"  ✓ Format: E-Connect v1.0 Standard ({res['package_root'] or 'flat root'})")
+            print(f"  ✓ Manifest: manifest.json parsed directly from folder")
+            print(f"  ✓ Format: E-Connect v1.0 Standard")
             print(f"  ✓ Identity: id='{res['extension_id']}' | version='{res['version']}'")
             print(f"  ✓ Author: '{res['author']}' -> {res['author_status']}")
+            print(f"  ✓ Entrypoint: '{res['entrypoint']}' verified")
             print(f"  ✓ Codebase: {res['py_files_count']} Python file(s) parsed & audited")
             print(f"  ✓ Security AST: No shell/subprocess, no eval/exec, no host tampering")
             print(f"  ✓ Device Schemas: {res['schemas_count']} schema(s) verified")
@@ -629,10 +614,10 @@ def main() -> int:
 
     print("\n" + "=" * 70)
     if total_failed > 0:
-        print(f"💥 AUDIT FAILED: {total_failed} extension package(s) violated security/format standards.")
+        print(f"💥 AUDIT FAILED: {total_failed} extension(s) violated security/format standards.")
         return 1
     else:
-        print(f"🎉 AUDIT PASSED: All {len(zips_to_audit)} package(s) verified 100% compliant and secure!")
+        print(f"🎉 AUDIT PASSED: All {len(exts_to_audit)} extension(s) verified 100% compliant and secure!")
         return 0
 
 

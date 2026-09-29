@@ -39,27 +39,26 @@ __pycache__/
 
 # ============================================================
 # Extension Packaging Rules
-# ONLY zipped extensions (*.zip) are allowed to be committed.
-# Unzipped source folders, loose scripts, and temporary files
-# must NOT be committed.
+# Extensions MUST be stored directly as uncompressed folders
+# containing manifest.json.
+# Archives (*.zip, *.tar, etc.) are strictly disallowed.
 # ============================================================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
 
-# Ignore all directories by default
-/*/
-
-# Ignore common loose source and data files at root
-*.py
-*.json
-*.sh
-*.log
+# Ignore loose temporary and backup files
 *.tmp
 *.bak
+*.log
 
-# Explicitly allow repository configs, docs, and zipped extensions
-!*.zip
+# Explicitly ensure markdown docs and license are tracked
 !*.md
-!.gitignore
 !LICENSE
+!.gitignore
 
 # Explicitly allow GitHub Actions workflows & CI scripts
 !/.github/
