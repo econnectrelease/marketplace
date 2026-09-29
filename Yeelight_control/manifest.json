@@ -4,6 +4,8 @@
   "name": "Yeelight LAN Lights",
   "version": "1.4.2",
   "author": "Experience",
+  "contributor": "ryzen30xx",
+  "icon": "lightbulb",
   "description": "An extensions for controlling Yeelight devices. For E-Connect Ecosystem!",
   "provider": {
     "key": "yeelight",
