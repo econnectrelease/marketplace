@@ -70,6 +70,12 @@ Hệ thống E-Connect đọc tệp `manifest.json` để xác định tiện í
   "name": "Yeelight LAN Lights",
   "version": "1.4.2",
   "author": "Experience",
+  "contributor": "ryzen30xx",
+  "icon": "lightbulb",
+  "categories": [
+    "light",
+    "3rd party"
+  ],
   "description": "An extension for controlling Yeelight devices on local LAN.",
   "provider": {
     "key": "yeelight",
@@ -90,6 +96,8 @@ Hệ thống E-Connect đọc tệp `manifest.json` để xác định tiện í
       "schema_id": "yeelight_white_light",
       "device_type": "light",
       "name": "Yeelight White Light",
+      "default_name": "Yeelight White Light",
+      "description": "Power and brightness control for single-tone Yeelight lamps.",
       "display": {
         "card_type": "light",
         "capabilities": ["power", "brightness"]
@@ -114,13 +122,20 @@ Hệ thống E-Connect đọc tệp `manifest.json` để xác định tiện í
 * `extension_id`: Slug định danh duy nhất (chữ thường, số, dấu gạch dưới hoặc gạch ngang, 2-120 ký tự).
 * `name`: Tên hiển thị của tiện ích.
 * `version`: Phiên bản theo Semantic Versioning (ví dụ: `1.0.0`).
-* `author`: Tên tác giả hoặc tổ chức phát triển.
+* `author`: Tên tác giả hoặc tổ chức phát triển (bắt buộc, đối chiếu danh bạ tin cậy).
 * `description`: Mô tả chi tiết chức năng tiện ích.
-* `provider.key`: Khóa định danh của nhà cung cấp thiết bị.
+* `provider.key`: Khóa định danh của nhà cung cấp thiết bị (slug chữ thường).
+* `provider.display_name`: Tên hiển thị của nhà cung cấp.
 * `package.runtime`: Môi trường thực thi (bắt buộc là `"python"`).
 * `package.entrypoint`: Tên tệp script chính (ví dụ: `main.py`).
 * `package.hooks`: Định nghĩa các hàm hook bắt buộc (`validate_command`, `execute_command`, `probe_state`).
 * `device_schemas`: Danh sách ít nhất 1 schema thiết bị được tiện ích hỗ trợ.
+
+### Các trường tùy chọn / mở rộng:
+* `contributor`: GitHub username của người đóng góp (ví dụ: `ryzen30xx`).
+* `icon`: Mã định danh icon Material Symbols (ví dụ: `lightbulb`, `hub`, `developer_board`, `sensors`).
+* `categories`: Danh sách các phân loại tiện ích (ví dụ: `["light", "3rd party"]`, `["hub"]`, `["system"]`, `["switch"]`, `["sensor"]`).
+* `package.hooks.discover_devices`: Hàm quét tự động phát hiện thiết bị trên mạng LAN.
 
 ---
 
