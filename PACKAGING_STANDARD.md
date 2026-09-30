@@ -25,36 +25,24 @@ Tài liệu này xác định quy chuẩn kỹ thuật bắt buộc đối với
 
 ---
 
-## 2. Cấu Trúc Thư Mục Chuẩn
+## 2. Cấu Trúc Thư Mục Tiện Ích Chuẩn
 
-Mỗi tiện ích mở rộng là một thư mục độc lập:
+Mỗi tiện ích mở rộng là một thư mục độc lập (Folder-Based Architecture):
 
 ```text
-econnect_extensions/
-├── .github/
-│   ├── workflows/validate-extensions.yml
-│   ├── scripts/validate_extensions.py
-│   └── trusted_authors.json
-│
-├── Yeelight_control/                 <-- Thư mục Extension 1
-│   ├── manifest.json                 <-- Bắt buộc: Định danh & metadata
-│   ├── main.py                       <-- File entrypoint chỉ định trong manifest
-│   └── yeelight_control.py           <-- Code logic / thư viện nội bộ
-│
-├── zigbee_manager/                   <-- Thư mục Extension 2
-│   ├── manifest.json
-│   └── main.py
-│
-├── devkit_extension/                 <-- Thư mục Extension 3
-│   ├── manifest.json
-│   └── main.py
-│
-├── README.md
-└── PACKAGING_STANDARD.md
+<extension_folder>/                      <-- Thư mục gốc của Extension (đặt theo slug extension_id)
+├── manifest.json                        <-- BẮT BUỘC: Metadata, schemas, hooks (ở cấp gốc extension)
+├── main.py                              <-- BẮT BUỘC: File entrypoint chỉ định trong manifest.json
+├── driver.py                            <-- KHUYẾN NGHỊ: Module điều khiển giao tiếp phần cứng
+├── utils.py                             <-- TÙY CHỌN: Hàm tiện ích bổ trợ
+├── lib/                                 <-- TÙY CHỌN: Package/module nội bộ đi kèm
+│   ├── __init__.py
+│   └── client.py
+└── assets/                              <-- TÙY CHỌN: Tài nguyên tĩnh (icon, hình ảnh)
 ```
 
 > **LƯU Ý:** 
-> - Tệp `manifest.json` phải nằm ngay tại cấp gốc của thư mục tiện ích (ví dụ: `Yeelight_control/manifest.json`).
+> - Tệp `manifest.json` phải nằm ngay tại cấp gốc của thư mục tiện ích (ví dụ: `<extension_folder>/manifest.json`).
 > - File entrypoint chỉ định tại `package.entrypoint` (thường là `main.py`) phải tồn tại trong thư mục.
 
 ---

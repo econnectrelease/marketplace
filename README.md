@@ -6,50 +6,63 @@ E-Connect áp dụng mô hình **Folder-Based Architecture** (thư mục không 
 
 ---
 
-## 🏗️ Cấu Trúc Phân Cấp Thư Mục (File Hierarchy Standard)
+## 🏗️ Cấu Trúc Phân Cấp Thư Mục Tiện Ích (Extension File Hierarchy)
 
-Mỗi tiện ích mở rộng trong E-Connect là **một thư mục độc lập** nằm ngay tại cấp gốc của repository `econnect_extensions/`. Hệ thống E-Connect Marketplace quét và nhận diện tự động (Auto-Discovery) thông qua sự hiện diện của tệp `manifest.json`.
+Một tiện ích mở rộng trong E-Connect là **một thư mục độc lập** (Folder-Based Architecture), được đặt tên theo slug định danh (`extension_id`). Toàn bộ cấu trúc phân cấp tệp tin bên trong thư mục tiện ích phải tuân thủ chuẩn sau:
 
-### 1. Cây thư mục tổng thể của Repository
 ```text
-econnect_extensions/
-├── .github/
-│   ├── workflows/
-│   │   └── validate-extensions.yml      <-- Pipeline CI/CD tự động kiểm duyệt
-│   ├── scripts/
-│   │   └── validate_extensions.py       <-- Script CLI thẩm định quy chuẩn & bảo mật
-│   └── trusted_authors.json             <-- Danh bạ tác giả tin cậy (Official / Partner)
+<extension_folder>/                      <-- Thư mục gốc của Extension (đặt tên theo slug extension_id)
 │
-├── <extension_name_1>/                  <-- Thư mục Extension 1 (ví dụ: smart_lighting)
-│   ├── manifest.json                    <-- [Bắt buộc] Metadata, schemas, hooks
-│   ├── main.py                          <-- [Bắt buộc] File entrypoint thực thi
-│   └── driver.py                        <-- Logic nội bộ / giao tiếp thiết bị
+├── manifest.json                        <-- [BẮT BUỘC] Tệp định danh metadata, cấu hình hooks & device schemas
+│                                            (Phải nằm trực tiếp tại cấp gốc của thư mục tiện ích)
 │
-├── <extension_name_2>/                  <-- Thư mục Extension 2 (ví dụ: zigbee_gateway)
-│   ├── manifest.json
-│   └── main.py
+├── main.py                              <-- [BẮT BUỘC] File entrypoint thực thi chính (hoặc tệp khai báo tại package.entrypoint)
+│                                            Chứa định nghĩa các hàm hooks: validate_command, execute_command, probe_state
 │
-├── PACKAGING_STANDARD.md                <-- Đặc tả kỹ thuật chi tiết
-└── README.md                            <-- Tài liệu quy chuẩn phát triển này
+├── driver.py / protocol.py              <-- [KHUYẾN NGHỊ] Module điều khiển giao tiếp phần cứng (LAN socket, HTTP, Serial, MQTT)
+├── utils.py / helpers.py                <-- [TÙY CHỌN] Các hàm tiện ích bổ trợ xử lý dữ liệu, chuyển đổi trạng thái
+│
+├── lib/                                 <-- [TÙY CHỌN] Gói thư viện hoặc các module nghiệp vụ nội bộ phân tách
+│   ├── __init__.py
+│   └── client.py
+│
+└── assets/                              <-- [TÙY CHỌN] Thư mục chứa tài nguyên tĩnh (icons, ảnh minh họa tĩnh nếu có)
+    └── icon.png
 ```
 
-### 2. Cấu trúc nội bộ của một Extension chuẩn
-```text
-<ten_extension_folder>/
-├── manifest.json        <-- [BẮT BUỘC] Tệp định danh metadata, schema và hooks (nằm tại root của extension)
-├── main.py              <-- [BẮT BUỘC] File entrypoint chỉ định trong manifest.json
-├── driver.py            <-- [TÙY CHỌN] Các module Python hỗ trợ giao tiếp thiết bị
-└── assets/              <-- [TÙY CHỌN] Tài nguyên bổ trợ (nếu có)
-```
+### 1. Chi tiết các thành phần trong cấu trúc Extension
 
-### 3. Quy chuẩn vệ sinh tệp tin (File Hygiene)
+* **`manifest.json` (Bắt buộc tại root của extension)**:
+  - Đây là tệp định danh quan trọng nhất, đóng vai trò bản đồ thông tin của tiện ích.
+  - Phải nằm trực tiếp tại thư mục gốc của tiện ích (ví dụ: `<extension_folder>/manifest.json`). Không được đặt bên trong bất kỳ thư mục con nào.
+  - Máy chủ E-Connect và Marketplace đọc trực tiếp tệp này để xác định `extension_id`, phiên bản, tác giả, icon, danh mục và toàn bộ danh sách `device_schemas`.
+
+* **File Entrypoint (`main.py` - Bắt buộc)**:
+  - Là tệp mã nguồn Python chính được chỉ định tại trường `package.entrypoint` trong `manifest.json`.
+  - File này là nơi E-Connect Server nạp vào runtime và trực tiếp gọi các hàm hook (`validate_command`, `execute_command`, `probe_state`, `discover_devices`).
+
+* **Mã nguồn logic & giao tiếp thiết bị (`driver.py`, `protocol.py`, `utils.py`)**:
+  - Nhà phát triển có thể tự do tổ chức các tệp module Python nội bộ phục vụ cho việc kết nối socket LAN, giao tiếp HTTP REST API, điều khiển serial port hoặc MQTT client.
+  - Tất cả các file Python phải được mã hóa theo chuẩn **UTF-8** và không chứa mã độc hại.
+
+* **Thư viện / Module con (`lib/`) & Tài nguyên (`assets/`)**:
+  - Dành cho các dự án phức tạp cần chia tách logic thành nhiều package con hoặc lưu trữ tài nguyên tĩnh nhẹ.
+
+### 2. Quy chuẩn vệ sinh thư mục & tệp tin (File Hygiene Rules)
+
+Để đảm bảo an toàn, hiệu năng và tính toàn vẹn khi phân phối trên Marketplace:
+
 > [!IMPORTANT]
-> Toàn bộ extension phải được lưu trữ dưới dạng **thư mục mở (uncompressed folder)**.
-> - **Nghiêm cấm** commit các tệp lưu trữ nén: `*.zip`, `*.tar`, `*.tar.gz`, `*.rar`, `*.7z`.
-> - **Nghiêm cấm** các tệp rác hệ điều hành: `.DS_Store`, `Thumbs.db`, `__MACOSX/`, `._*`.
-> - **Nghiêm cấm** thư mục cache mã nguồn: `__pycache__/`, `*.pyc`, `*.pyo`.
-> - **Nghiêm cấm** tệp cấu hình IDE hoặc Git: `.git/`, `.vscode/`, `.idea/`.
-> - **Giới hạn dung lượng**: Toàn bộ thư mục tiện ích không được vượt quá **25 MB**.
+> - **Chỉ sử dụng thư mục mở (Uncompressed Folders)**: Tuyệt đối không commit tệp nén (`*.zip`, `*.tar`, `*.tar.gz`, `*.rar`, `*.7z`). E-Connect quét và phân phối trực tiếp từ cấu trúc thư mục.
+> - **Tuyệt đối cấm tệp rác hệ điều hành**:
+>   - macOS: `.DS_Store`, `__MACOSX/`, tệp ẩn `._*`
+>   - Windows: `Thumbs.db`, `desktop.ini`
+> - **Tuyệt đối cấm cache mã nguồn & bytecode biên dịch**:
+>   - Python bytecode: `__pycache__/`, `*.pyc`, `*.pyo`, `*.pyd`
+> - **Tuyệt đối cấm metadata phiên bản hoặc IDE**:
+>   - `.git/`, `.vscode/`, `.idea/`, `.pytest_cache/`
+> - **Giới hạn dung lượng an toàn**:
+>   - Toàn bộ thư mục tiện ích tối đa **25 MB**.
 
 ---
 
