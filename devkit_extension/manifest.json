@@ -3,8 +3,13 @@
   "extension_id": "devkit_debug",
   "name": "E-Connect DevKit Debugger",
   "version": "1.0.0",
+  "author": "E-Connect Team",
+  "contributor": "ryzen30xx",
+  "icon": "developer_board",
+  "categories": [
+    "system"
+  ],
   "description": "DevKit Extension. Cung cấp Dashboard theo dõi dữ liệu raw từ Server (validate_command, execute_command, probe_state) theo thời gian thực.\n\nHướng dẫn truy cập:\n Truy cập vào web browser theo đường dẫn: http://&lt;IP_Server_E_Connect&gt;:8000/devkit",
-  "author": "Experience",
   "provider": {
     "key": "developer_toolkit",
     "display_name": "Developer Toolkit"

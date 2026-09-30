@@ -38,6 +38,9 @@ IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,119}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,59}$")
 PYTHON_SYMBOL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SUPPORTED_CONFIG_FIELD_TYPES = {"string", "number", "boolean", "password"}
+CONTRIBUTOR_PATTERN = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$")
+ICON_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,60}$")
+CATEGORY_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\s-]{0,49}$")
 
 REQUIRED_HOOKS = {"validate_command", "execute_command", "probe_state"}
 OPTIONAL_HOOKS = {"discover_devices"}
@@ -330,6 +333,58 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
     # 5. Check author authenticity
     author, author_status = validate_author(manifest_data.get("author"), authors_config)
 
+    # 5a. Check contributor (optional GitHub username)
+    raw_contributor = (
+        manifest_data.get("contributor")
+        or manifest_data.get("github_contributor")
+        or manifest_data.get("github_username")
+    )
+    contributor = None
+    if raw_contributor is not None:
+        if not isinstance(raw_contributor, str) or not raw_contributor.strip():
+            raise ValueError(f"{ext_dir.name}: 'contributor' must be a non-empty string.")
+        contributor = raw_contributor.strip()
+        if not CONTRIBUTOR_PATTERN.fullmatch(contributor):
+            raise ValueError(
+                f"{ext_dir.name}: Invalid contributor username '{contributor}'. Must be a valid GitHub username."
+            )
+
+    # 5b. Check icon (optional Material Icon identifier)
+    raw_icon = manifest_data.get("icon")
+    icon = None
+    if raw_icon is not None:
+        if not isinstance(raw_icon, str) or not raw_icon.strip():
+            raise ValueError(f"{ext_dir.name}: 'icon' must be a non-empty string.")
+        icon = raw_icon.strip()
+        if not ICON_PATTERN.fullmatch(icon):
+            raise ValueError(f"{ext_dir.name}: Invalid icon identifier '{icon}'.")
+
+    # 5c. Check categories (optional list or string)
+    raw_categories = manifest_data.get("categories")
+    raw_category = manifest_data.get("category")
+    categories: list[str] = []
+    if raw_categories is not None:
+        if isinstance(raw_categories, list):
+            if len(raw_categories) == 0:
+                raise ValueError(f"{ext_dir.name}: 'categories' cannot be an empty list.")
+            for c in raw_categories:
+                if not isinstance(c, str) or not c.strip() or not CATEGORY_PATTERN.fullmatch(c.strip()):
+                    raise ValueError(f"{ext_dir.name}: Invalid category entry '{c}'.")
+                clean_c = c.strip().lower()
+                if clean_c not in categories:
+                    categories.append(clean_c)
+        elif isinstance(raw_categories, str) and raw_categories.strip():
+            if not CATEGORY_PATTERN.fullmatch(raw_categories.strip()):
+                raise ValueError(f"{ext_dir.name}: Invalid category '{raw_categories}'.")
+            categories.append(raw_categories.strip().lower())
+        else:
+            raise ValueError(f"{ext_dir.name}: 'categories' must be a list of strings or a string.")
+
+    if raw_category is not None and not categories:
+        if not isinstance(raw_category, str) or not raw_category.strip() or not CATEGORY_PATTERN.fullmatch(raw_category.strip()):
+            raise ValueError(f"{ext_dir.name}: Invalid 'category' '{raw_category}'.")
+        categories.append(raw_category.strip().lower())
+
     # 6. Check name, version, description
     name = str(manifest_data.get("name", "")).strip()
     version = str(manifest_data.get("version", "")).strip()
@@ -401,6 +456,40 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
         caps = disp.get("capabilities")
         if not isinstance(caps, list) or len(caps) == 0:
             raise ValueError(f"{ext_dir.name}: schema '{sid}' display.capabilities must be a non-empty list.")
+        for cap in caps:
+            if not isinstance(cap, str) or not CAPABILITY_PATTERN.fullmatch(cap.strip().lower()):
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' capability '{cap}' is invalid.")
+
+        temp_range = disp.get("temperature_range")
+        if temp_range is not None:
+            if card_type != "light":
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' temperature_range is only permitted for card_type 'light'.")
+            if not isinstance(temp_range, dict) or not isinstance(temp_range.get("min"), int) or not isinstance(temp_range.get("max"), int):
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' temperature_range must have integer min and max.")
+            if temp_range["min"] >= temp_range["max"]:
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' temperature_range min must be less than max.")
+
+        cfg_schema = schema.get("config_schema")
+        if cfg_schema is not None:
+            if not isinstance(cfg_schema, dict):
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' config_schema must be an object.")
+            fields = cfg_schema.get("fields")
+            if fields is not None:
+                if not isinstance(fields, list):
+                    raise ValueError(f"{ext_dir.name}: schema '{sid}' config_schema.fields must be a list.")
+                for f_idx, field in enumerate(fields):
+                    if not isinstance(field, dict):
+                        raise ValueError(f"{ext_dir.name}: schema '{sid}' config_schema.fields[{f_idx}] must be an object.")
+                    f_key = str(field.get("key", "")).strip().lower()
+                    if not IDENTIFIER_PATTERN.fullmatch(f_key):
+                        raise ValueError(f"{ext_dir.name}: schema '{sid}' field key '{f_key}' must be a valid lowercase slug.")
+                    f_type = str(field.get("type", "")).strip().lower()
+                    if f_type not in SUPPORTED_CONFIG_FIELD_TYPES:
+                        raise ValueError(
+                            f"{ext_dir.name}: schema '{sid}' field '{f_key}' has unsupported type '{f_type}'. Supported: {sorted(SUPPORTED_CONFIG_FIELD_TYPES)}"
+                        )
+                    if "required" in field and not isinstance(field["required"], bool):
+                        raise ValueError(f"{ext_dir.name}: schema '{sid}' field '{f_key}' required must be a boolean.")
 
     # 11. Deep Security & AST Inspection
     security_findings = audit_python_files(ext_dir)
@@ -421,6 +510,9 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
         "version": version,
         "author": author,
         "author_status": author_status,
+        "contributor": contributor,
+        "icon": icon,
+        "categories": categories,
         "size_kb": round(total_bytes / 1024, 2),
         "py_files_count": py_count,
         "schemas_count": len(schemas),
@@ -471,6 +563,7 @@ def find_changed_extension_dirs(repo_root: Path, base_ref: str | None = None) ->
         env_base = os.getenv("GITHUB_BASE_REF")
         if env_base:
             diff_targets.append(f"origin/{env_base}")
+            diff_targets.append(env_base)
         env_before = os.getenv("GITHUB_BEFORE")
         if env_before and env_before != "0000000000000000000000000000000000000000":
             diff_targets.append(env_before)
@@ -591,6 +684,7 @@ def main() -> int:
 
     total_failed = 0
     audit_results = []
+    audit_failures = []
 
     for idx, ext_dir in enumerate(exts_to_audit, 1):
         print(f"\n📂 [{idx}/{len(exts_to_audit)}] Auditing Extension Folder: {ext_dir.name}")
@@ -602,6 +696,12 @@ def main() -> int:
             print(f"  ✓ Format: E-Connect v1.0 Standard")
             print(f"  ✓ Identity: id='{res['extension_id']}' | version='{res['version']}'")
             print(f"  ✓ Author: '{res['author']}' -> {res['author_status']}")
+            if res.get("contributor"):
+                print(f"  ✓ Contributor: @{res['contributor']}")
+            if res.get("icon"):
+                print(f"  ✓ Icon: {res['icon']}")
+            if res.get("categories"):
+                print(f"  ✓ Categories: {', '.join(res['categories'])}")
             print(f"  ✓ Entrypoint: '{res['entrypoint']}' verified")
             print(f"  ✓ Codebase: {res['py_files_count']} Python file(s) parsed & audited")
             print(f"  ✓ Security AST: No shell/subprocess, no eval/exec, no host tampering")
@@ -609,8 +709,27 @@ def main() -> int:
             print(f"  ✅ VERDICT: PASS (Authentic, compliant & safe)")
         except Exception as exc:
             total_failed += 1
+            audit_failures.append({"folder_name": ext_dir.name, "error": str(exc)})
             print(f"  ❌ VERDICT: FAILED")
             print(f"     Reason: {exc}")
+
+    # Generate GitHub Step Summary if running inside GitHub Actions
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as sf:
+                sf.write("### 🛡️ E-Connect Extension Audit Results\n\n")
+                sf.write("| Extension Folder | Extension ID | Version | Author | Contributor | Categories | Verdict |\n")
+                sf.write("|---|---|---|---|---|---|---|\n")
+                for r in audit_results:
+                    contrib = f"@{r['contributor']}" if r.get("contributor") else "-"
+                    cats = ", ".join(r.get("categories", [])) or "-"
+                    sf.write(f"| `{r['folder_name']}` | `{r['extension_id']}` | `{r['version']}` | {r['author']} | {contrib} | {cats} | ✅ PASS |\n")
+                for f_item in audit_failures:
+                    sf.write(f"| `{f_item['folder_name']}` | - | - | - | - | - | ❌ FAILED (`{f_item['error']}`) |\n")
+                sf.write("\n")
+        except Exception:
+            pass
 
     print("\n" + "=" * 70)
     if total_failed > 0:

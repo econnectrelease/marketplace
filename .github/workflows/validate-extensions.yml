@@ -8,13 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       audit_scope:
-        description: "Scope of audit: 'changed' (only modified extensions) or 'all' (all extensions in repository)"
+        description: "Scope of audit: 'all' (all extensions in repository) or 'changed' (only modified extensions)"
         required: true
-        default: "changed"
+        default: "all"
         type: choice
         options:
-          - changed
           - all
+          - changed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,12 +41,16 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install bandit
 
-      - name: Run Selective Format Verification & Malware Audit
+      - name: Run Extension Format Verification & Malware Audit
         env:
           GITHUB_BASE_REF: ${{ github.base_ref }}
           GITHUB_BEFORE: ${{ github.event.before }}
-          AUDIT_SCOPE: ${{ inputs.audit_scope || 'changed' }}
+          AUDIT_SCOPE: ${{ inputs.audit_scope || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'all') || (github.event_name == 'pull_request' && 'changed') || 'all' }}
         run: |
+          echo "=================================================="
+          echo "🚀 Event: ${{ github.event_name }} | Branch/Ref: ${{ github.ref }}"
+          echo "🎯 Audit Scope: $AUDIT_SCOPE"
+          echo "=================================================="
           if [ "$AUDIT_SCOPE" = "all" ]; then
             python3 .github/scripts/validate_extensions.py --all
           else
