@@ -6,19 +6,9 @@ E-Connect áp dụng mô hình **Folder-Based Architecture** (thư mục không 
 
 ---
 
-## 📦 Danh Sách Tiện Ích Hiện Tại
-
-| Thư Mục | Extension ID | Phiên Bản | Tác Giả & Đóng Góp | Icon | Phân Loại | Mô Tả |
-|---|---|---|---|---|---|---|
-| [`Yeelight_control/`](Yeelight_control/) | `yeelight_control` | `1.4.2` | Experience<br>(`@ryzen30xx`) | `lightbulb` | `light`, `3rd party` | Điều khiển hệ thống đèn thông minh Yeelight qua mạng nội bộ Wi-Fi LAN |
-| [`devkit_extension/`](devkit_extension/) | `devkit_debug` | `1.0.0` | E-Connect Team<br>(`@ryzen30xx`) | `developer_board` | `system` | Tiện ích DevKit gỡ lỗi, giả lập và theo dõi dữ liệu raw từ Server theo thời gian thực |
-| [`zigbee_manager/`](zigbee_manager/) | `zigbee-manager` | `1.0.0` | E-Connect Team<br>(`@ryzen30xx`) | `hub` | `hub` | Quản lý USB Zigbee Coordinator và tích hợp thiết bị con qua Zigbee2MQTT |
-
----
-
 ## 🏗️ Cấu Trúc Phân Cấp Thư Mục (File Hierarchy Standard)
 
-Mỗi tiện ích mở rộng trong E-Connect là **một thư mục độc lập** nằm ngay tại cấp gốc của repository `econnect_extensions/`. 
+Mỗi tiện ích mở rộng trong E-Connect là **một thư mục độc lập** nằm ngay tại cấp gốc của repository `econnect_extensions/`. Hệ thống E-Connect Marketplace quét và nhận diện tự động (Auto-Discovery) thông qua sự hiện diện của tệp `manifest.json`.
 
 ### 1. Cây thư mục tổng thể của Repository
 ```text
@@ -30,21 +20,17 @@ econnect_extensions/
 │   │   └── validate_extensions.py       <-- Script CLI thẩm định quy chuẩn & bảo mật
 │   └── trusted_authors.json             <-- Danh bạ tác giả tin cậy (Official / Partner)
 │
-├── Yeelight_control/                     <-- Thư mục Extension 1
+├── <extension_name_1>/                  <-- Thư mục Extension 1 (ví dụ: smart_lighting)
 │   ├── manifest.json                    <-- [Bắt buộc] Metadata, schemas, hooks
 │   ├── main.py                          <-- [Bắt buộc] File entrypoint thực thi
-│   └── yeelight_control.py              <-- Logic nội bộ / driver điều khiển
+│   └── driver.py                        <-- Logic nội bộ / giao tiếp thiết bị
 │
-├── zigbee_manager/                       <-- Thư mục Extension 2
-│   ├── manifest.json
-│   └── main.py
-│
-├── devkit_extension/                     <-- Thư mục Extension 3
+├── <extension_name_2>/                  <-- Thư mục Extension 2 (ví dụ: zigbee_gateway)
 │   ├── manifest.json
 │   └── main.py
 │
 ├── PACKAGING_STANDARD.md                <-- Đặc tả kỹ thuật chi tiết
-└── README.md                            <-- Hướng dẫn phát triển này
+└── README.md                            <-- Tài liệu quy chuẩn phát triển này
 ```
 
 ### 2. Cấu trúc nội bộ của một Extension chuẩn
@@ -311,7 +297,7 @@ python3 -m pip install bandit
 
 ```bash
 # 1. Kiểm tra một thư mục tiện ích cụ thể:
-python3 .github/scripts/validate_extensions.py Yeelight_control
+python3 .github/scripts/validate_extensions.py smart_lighting_pro
 
 # 2. Kiểm tra chỉ các tiện ích có thay đổi (so với commit trước hoặc working tree):
 python3 .github/scripts/validate_extensions.py --changed-only
@@ -327,11 +313,11 @@ Khi kiểm tra thành công, kết quả hiển thị dạng:
     Target Extensions: 1 folder(s) selected for audit
 ======================================================================
 
-📂 [1/1] Auditing Extension Folder: Yeelight_control
+📂 [1/1] Auditing Extension Folder: smart_lighting_pro
   ------------------------------------------------------------------
   ✓ Manifest: manifest.json parsed directly from folder
   ✓ Format: E-Connect v1.0 Standard
-  ✓ Identity: id='yeelight_control' | version='1.4.2'
+  ✓ Identity: id='smart_lighting_pro' | version='1.0.0'
   ✓ Author: 'Experience' -> VERIFIED DEVELOPER (Partner)
   ✓ Contributor: @ryzen30xx
   ✓ Icon: lightbulb
@@ -339,7 +325,7 @@ Khi kiểm tra thành công, kết quả hiển thị dạng:
   ✓ Entrypoint: 'main.py' verified
   ✓ Codebase: 2 Python file(s) parsed & audited
   ✓ Security AST: No shell/subprocess, no eval/exec, no host tampering
-  ✓ Device Schemas: 4 schema(s) verified
+  ✓ Device Schemas: 1 schema(s) verified
   ✅ VERDICT: PASS (Authentic, compliant & safe)
 
 ======================================================================
