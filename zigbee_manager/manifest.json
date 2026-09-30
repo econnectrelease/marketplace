@@ -6,6 +6,9 @@
   "author": "E-Connect Team",
   "contributor": "ryzen30xx",
   "icon": "hub",
+  "categories": [
+    "hub"
+  ],
   "description": "Quản lý USB Zigbee Coordinator và tích hợp các thiết bị con Zigbee thông qua Zigbee2MQTT",
   "provider": {
     "key": "zigbee2mqtt",

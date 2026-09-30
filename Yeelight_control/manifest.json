@@ -6,6 +6,9 @@
   "author": "Experience",
   "contributor": "ryzen30xx",
   "icon": "lightbulb",
+  "categories": [
+    "lighting"
+  ],
   "description": "An extensions for controlling Yeelight devices. For E-Connect Ecosystem!",
   "provider": {
     "key": "yeelight",
