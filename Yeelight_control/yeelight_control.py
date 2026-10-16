@@ -427,9 +427,6 @@ def _execute_yeelight_command_direct(
             known_power_state=known_power_state,
         )
         time.sleep(POST_COMMAND_PROBE_DELAY_SECONDS)
-        # Read back actual lamp state instead of predicting.
-        # Predicted state was off by up to 61% (e.g., API returned
-        # brightness=79 while real lamp was at 31).
         try:
             props_response = session.send("get_prop", list(PROBE_PROPERTIES))
             return _build_yeelight_state(
@@ -553,7 +550,8 @@ def _send_yeelight_power_command(
     allow_timeout: bool = False,
 ) -> None:
     try:
-        session.send("set_power", [desired_power, "smooth", TRANSITION_MS, 0], expect_reply=False)
+        params = [desired_power, "smooth", TRANSITION_MS] if desired_power == "off" else [desired_power, "smooth", TRANSITION_MS, 0]
+        session.send("set_power", params, expect_reply=False)
     except ExtensionRuntimeError:
         if not allow_timeout:
             raise
@@ -590,7 +588,7 @@ def _apply_yeelight_command(
         if requested_brightness <= 0:
             if known_power_state == "off":
                 return
-            session.send("set_power", ["off", "smooth", TRANSITION_MS, 0], expect_reply=False)
+            session.send("set_power", ["off", "smooth", TRANSITION_MS], expect_reply=False)
         else:
             if known_power_state == "off":
                 _send_yeelight_power_command(session, "on", allow_timeout=True)
@@ -603,8 +601,8 @@ def _apply_yeelight_command(
 
     if command.action == "power":
         desired_power = command.desired_power or "off"
-        # Always send — stale last_state should not block the command.
-        session.send("set_power", [desired_power, "smooth", TRANSITION_MS, 0], expect_reply=False)
+        params = [desired_power, "smooth", TRANSITION_MS] if desired_power == "off" else [desired_power, "smooth", TRANSITION_MS, 0]
+        session.send("set_power", params, expect_reply=False)
         return
 
     raise ExtensionValidationError(
@@ -635,7 +633,7 @@ def _apply_yeelight_command_without_power_preflight(
     if command.action == "brightness":
         requested_brightness = command.brightness or 0
         if requested_brightness <= 0:
-            session.send("set_power", ["off", "smooth", TRANSITION_MS, 0], expect_reply=False)
+            session.send("set_power", ["off", "smooth", TRANSITION_MS], expect_reply=False)
         else:
             session.send(
                 "set_bright",

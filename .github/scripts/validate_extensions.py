@@ -36,6 +36,12 @@ MAX_EXTENSION_BYTES = 25 * 1024 * 1024  # 25 MB max uncompressed directory size
 
 IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,119}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,59}$")
+GENERIC_METRIC_SLOT_PATTERN = re.compile(r"^value(?:[1-9][0-9]*)?$")
+SUPPORTED_STANDARD_CAPABILITIES = {
+    "power", "brightness", "rgb", "color_temperature", "speed",
+    "temperature", "humidity", "value",
+}
+SUPPORTED_METRIC_VALUE_TYPES = {"number", "string", "boolean"}
 PYTHON_SYMBOL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SUPPORTED_CONFIG_FIELD_TYPES = {"string", "number", "boolean", "password"}
 CONTRIBUTOR_PATTERN = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$")
@@ -318,9 +324,10 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
         raise ValueError(f"{ext_dir.name}: manifest.json must be a JSON object.")
 
     # 3. Check manifest_version
-    if manifest_data.get("manifest_version") != "1.0":
+    manifest_version = manifest_data.get("manifest_version")
+    if manifest_version not in {"1.0", "2.0"}:
         raise ValueError(
-            f"{ext_dir.name}: Unsupported manifest_version '{manifest_data.get('manifest_version')}'. Expected '1.0'."
+            f"{ext_dir.name}: Unsupported manifest_version '{manifest_version}'. Expected '1.0' or '2.0'."
         )
 
     # 4. Check extension_id
@@ -459,6 +466,36 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
         for cap in caps:
             if not isinstance(cap, str) or not CAPABILITY_PATTERN.fullmatch(cap.strip().lower()):
                 raise ValueError(f"{ext_dir.name}: schema '{sid}' capability '{cap}' is invalid.")
+            normalized_cap = cap.strip().lower()
+            if manifest_version == "2.0" and (
+                normalized_cap not in SUPPORTED_STANDARD_CAPABILITIES
+                and not GENERIC_METRIC_SLOT_PATTERN.fullmatch(normalized_cap)
+            ):
+                raise ValueError(
+                    f"{ext_dir.name}: schema '{sid}' uses unsupported v2 capability '{normalized_cap}'."
+                )
+
+        if manifest_version == "2.0":
+            metrics = disp.get("metrics")
+            if not isinstance(metrics, list):
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' display.metrics must be a list for v2 manifests.")
+            cap_slots = {str(cap).strip().lower() for cap in caps if isinstance(cap, str) and GENERIC_METRIC_SLOT_PATTERN.fullmatch(cap.strip().lower())}
+            metric_slots: set[str] = set()
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    raise ValueError(f"{ext_dir.name}: schema '{sid}' display.metrics entries must be objects.")
+                slot = str(metric.get("slot") or "").strip().lower()
+                if slot not in cap_slots or slot in metric_slots:
+                    raise ValueError(f"{ext_dir.name}: schema '{sid}' has invalid or duplicate metric slot '{slot}'.")
+                metric_slots.add(slot)
+                if not isinstance(metric.get("label"), str) or not metric["label"].strip():
+                    raise ValueError(f"{ext_dir.name}: schema '{sid}' metric '{slot}' requires a label.")
+                if metric.get("unit") is not None and (not isinstance(metric["unit"], str) or not metric["unit"].strip()):
+                    raise ValueError(f"{ext_dir.name}: schema '{sid}' metric '{slot}' unit must be a non-empty string.")
+                if metric.get("type", "number") not in SUPPORTED_METRIC_VALUE_TYPES:
+                    raise ValueError(f"{ext_dir.name}: schema '{sid}' metric '{slot}' type is unsupported.")
+            if metric_slots != cap_slots:
+                raise ValueError(f"{ext_dir.name}: schema '{sid}' must define exactly one metric for every value/value1/... slot.")
 
         temp_range = disp.get("temperature_range")
         if temp_range is not None:

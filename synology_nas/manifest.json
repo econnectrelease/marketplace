@@ -1,0 +1,112 @@
+{
+  "manifest_version": "1.0",
+  "extension_id": "synology_nas",
+  "name": "Synology NAS Monitor",
+  "version": "1.0.2",
+  "author": "E-Connect Team",
+  "contributor": "ryzen30xx",
+  "icon": "storage",
+  "categories": [
+    "system",
+    "sensor",
+    "3rd party"
+  ],
+  "description": "Theo dõi NAS Synology DSM trên mạng LAN: dung lượng đã dùng/tổng, nhiệt độ hệ thống khi DSM hỗ trợ và trạng thái kết nối.",
+  "provider": {
+    "key": "synology",
+    "display_name": "Synology DSM"
+  },
+  "package": {
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "hooks": {
+      "validate_command": "validate_command",
+      "execute_command": "execute_command",
+      "probe_state": "probe_state"
+    }
+  },
+  "device_schemas": [
+    {
+      "schema_id": "synology_nas_monitor",
+      "device_type": "sensor",
+      "name": "Synology NAS",
+      "default_name": "Synology NAS",
+      "description": "Thiết bị chỉ-đọc hiển thị trạng thái DSM, dung lượng lưu trữ và nhiệt độ hệ thống nếu NAS cung cấp dữ liệu này.",
+      "display": {
+        "card_type": "sensor",
+        "capabilities": [
+          "value",
+          "value1",
+          "value2",
+          "value3"
+        ],
+        "metrics": [
+          {
+            "slot": "value",
+            "label": "Trạng thái DSM",
+            "type": "string"
+          },
+          {
+            "slot": "value1",
+            "label": "Bộ nhớ đã dùng",
+            "unit": "bytes",
+            "type": "number"
+          },
+          {
+            "slot": "value2",
+            "label": "Tổng dung lượng",
+            "unit": "bytes",
+            "type": "number"
+          },
+          {
+            "slot": "value3",
+            "label": "Nhiệt độ NAS",
+            "unit": "°C",
+            "type": "number"
+          }
+        ],
+        "col_span": 2
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "base_url",
+            "label": "Địa chỉ DSM (ví dụ: https://192.168.1.10:5001)",
+            "type": "string",
+            "required": true,
+            "description": "URL đầy đủ của giao diện DSM (bao gồm cổng, vd: https://192.168.2.230:5001)."
+          },
+          {
+            "key": "username",
+            "label": "Tài khoản DSM",
+            "type": "string",
+            "required": true,
+            "description": "Tên tài khoản người dùng trên NAS Synology."
+          },
+          {
+            "key": "password",
+            "label": "Mật khẩu DSM",
+            "type": "password",
+            "required": true,
+            "description": "Mật khẩu của tài khoản DSM."
+          },
+          {
+            "key": "otp_code",
+            "label": "Mã xác minh 2 bước DSM (OTP 2FA)",
+            "type": "string",
+            "required": false,
+            "description": "Nhập mã TOTP 6 số từ Google Authenticator hoặc Synology Secure SignIn nếu tài khoản DSM bật 2FA. Bỏ trống nếu không bật 2FA."
+          },
+          {
+            "key": "verify_tls",
+            "label": "Xác thực chứng chỉ TLS",
+            "type": "boolean",
+            "required": false,
+            "default": false,
+            "description": "Bỏ chọn nếu NAS dùng chứng chỉ tự ký (self-signed SSL) trong mạng LAN."
+          }
+        ]
+      }
+    }
+  ]
+}
