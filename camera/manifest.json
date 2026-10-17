@@ -1,0 +1,135 @@
+{
+  "manifest_version": "1.0",
+  "extension_id": "camera",
+  "name": "Camera An Ninh",
+  "version": "1.1.0",
+  "author": "E-Connect Team",
+  "contributor": "ryzen30xx",
+  "icon": "videocam",
+  "categories": [
+    "camera",
+    "security",
+    "multimedia"
+  ],
+  "description": "Kết nối và quản trị camera an ninh đa giao thức (RTSP, ONVIF, HTTP/MJPEG, HLS, RTMP). Hỗ trợ xem trực tiếp độ trễ thấp, chụp ảnh tức thì (snapshot).",
+  "provider": {
+    "key": "camera",
+    "display_name": "Camera An Ninh"
+  },
+  "package": {
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "hooks": {
+      "validate_command": "validate_command",
+      "execute_command": "execute_command",
+      "probe_state": "probe_state"
+    }
+  },
+  "device_schemas": [
+    {
+      "schema_id": "security_camera",
+      "device_type": "camera",
+      "name": "Camera An Ninh",
+      "default_name": "Camera An Ninh",
+      "description": "Camera an ninh đa chuẩn kết nối (RTSP, ONVIF, HTTP/MJPEG, HLS, RTMP).",
+      "display": {
+        "card_type": "camera",
+        "capabilities": [
+          "video_stream",
+          "snapshot",
+          "power"
+        ],
+        "metrics": [
+          {
+            "slot": "status",
+            "label": "Trạng thái",
+            "type": "string"
+          },
+          {
+            "slot": "protocol",
+            "label": "Chuẩn kết nối",
+            "type": "string"
+          },
+          {
+            "slot": "resolution",
+            "label": "Độ phân giải",
+            "type": "string"
+          },
+          {
+            "slot": "codec",
+            "label": "Chuẩn nén",
+            "type": "string"
+          },
+          {
+            "slot": "fps",
+            "label": "FPS",
+            "type": "number"
+          }
+        ],
+        "col_span": 2
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "protocol",
+            "label": "Chuẩn kết nối (Protocol)",
+            "type": "string",
+            "required": false,
+            "default": "auto",
+            "options": [
+              {"value": "auto", "label": "Tự nhận diện (Auto-detect)"},
+              {"value": "rtsp", "label": "RTSP (Dahua, Hikvision, Ezviz, Imou, Tapo...)"},
+              {"value": "onvif", "label": "ONVIF (Tự động truy vấn Stream URI qua cổng ONVIF)"},
+              {"value": "mjpeg", "label": "HTTP / MJPEG (ESP32-CAM, webcam IP)"},
+              {"value": "hls", "label": "HLS / m3u8 (HTTP Live Streaming)"},
+              {"value": "rtmp", "label": "RTMP (Encoder / Live Feed)"}
+            ],
+            "description": "Chọn chuẩn kết nối hoặc để 'Tự nhận diện' theo luồng."
+          },
+          {
+            "key": "stream_url",
+            "label": "Đường dẫn luồng hoặc IP camera (Stream URL / Host)",
+            "type": "string",
+            "required": true,
+            "description": "Ví dụ: rtsp://192.168.2.55:8554/live (K8s1 Test Server), rtsp://192.168.1.100:554/stream1, http://192.168.1.100:81/stream, 192.168.1.100, hoặc 'test' để chạy luồng thử nghiệm."
+          },
+          {
+            "key": "username",
+            "label": "Tài khoản (Tùy chọn)",
+            "type": "string",
+            "required": false,
+            "description": "Tên đăng nhập nếu camera yêu cầu xác thực."
+          },
+          {
+            "key": "password",
+            "label": "Mật khẩu (Tùy chọn)",
+            "type": "password",
+            "required": false,
+            "description": "Mật khẩu nếu camera yêu cầu xác thực."
+          },
+          {
+            "key": "transport",
+            "label": "Chuẩn truyền tải RTSP (Transport)",
+            "type": "string",
+            "required": false,
+            "default": "all",
+            "options": [
+              {"value": "all", "label": "ALL (Tự nhận diện UDP/TCP)"},
+              {"value": "tcp", "label": "TCP (Chống rớt gói)"},
+              {"value": "udp", "label": "UDP (Độ trễ thấp)"}
+            ],
+            "description": "Chỉ áp dụng với luồng RTSP. Mặc định ALL để tự động thương lượng."
+          },
+          {
+            "key": "onvif_port",
+            "label": "Cổng ONVIF (Nếu dùng ONVIF)",
+            "type": "number",
+            "required": false,
+            "default": 80,
+            "description": "Cổng ONVIF của camera (thường là 80, 8080, 8000, 8899 hoặc 5000)."
+          }
+        ]
+      }
+    }
+  ]
+}
