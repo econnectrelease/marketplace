@@ -54,6 +54,7 @@ _MEMORY_SESSION_CACHE: dict[str, dict[str, Any]] = {}
 def _resolve_session_dir() -> Path:
     """Find a reliable persistent directory for session cache files."""
     candidates = [
+        Path("/var/lib/econnect/data/sessions"),
         Path.home() / ".econnect" / "synology_sessions",
         Path(tempfile.gettempdir()) / "econnect_synology_sessions",
         Path("/tmp") / "econnect_synology_sessions",
@@ -138,14 +139,16 @@ def execute_command(device: dict[str, Any], command: dict[str, Any]) -> dict[str
 
 
 def probe_state(device: dict[str, Any]) -> dict[str, Any]:
-    """Authenticate to DSM (or reuse existing session/2FA trust) and return manifest-declared metric slots."""
+    """Authenticate to DSM and return monitoring & data protection metrics."""
     config = _get_config(device)
     client = _DsmClient(config)
     metric_errors: list[str] = []
 
-    storage: dict[str, int | float] | None = None
+    storage_raw: Any = None
+    storage: dict[str, Any] | None = None
     try:
-        storage = _extract_storage(client.call(STORAGE_API, "load_info", {"additional": "volume"}))
+        storage_raw = client.call(STORAGE_API, "load_info")
+        storage = _extract_storage(storage_raw)
         if storage is None:
             metric_errors.append("DSM did not return a usable volume capacity.")
     except ExtensionValidationError:
@@ -155,6 +158,7 @@ def probe_state(device: dict[str, Any]) -> dict[str, Any]:
             raise
         metric_errors.append("Storage capacity could not be read from DSM.")
 
+    system_info: Any = None
     temperature: float | None = None
     try:
         system_info = client.call(SYSTEM_API, "info")
@@ -172,6 +176,9 @@ def probe_state(device: dict[str, Any]) -> dict[str, Any]:
     # Preserving the session across probe intervals avoids invalidating the 30-second TOTP
     # and eliminates redundant login round-trips to the NAS.
 
+    # Extract rich Data Protection metrics (RAID, Scrubbing, Disks, SMART)
+    data_protection_info = _extract_data_protection(storage_raw, system_info)
+
     dsm_status = storage.get("status", "healthy") if storage is not None else "healthy"
 
     state: dict[str, Any] = {
@@ -184,6 +191,11 @@ def probe_state(device: dict[str, Any]) -> dict[str, Any]:
         "storage_percent": storage["used_percent"] if storage is not None else None,
         "storage_free": storage["free_bytes"] if storage is not None else None,
         "dsm_status": dsm_status,
+        "data_protection": data_protection_info.get("summary", {}),
+        "storage_pools": data_protection_info.get("storage_pools", []),
+        "volumes": data_protection_info.get("volumes", []),
+        "disks": data_protection_info.get("disks", []),
+        "system_info": data_protection_info.get("system", {}),
     }
     if metric_errors:
         state["metric_warnings"] = metric_errors
@@ -252,7 +264,7 @@ class _DsmClient:
             self._discover_api_paths()
 
     def ensure_authenticated(self) -> None:
-        """Authenticate to DSM if no active session ID exists."""
+        """Reuse persistent session if present; otherwise authenticate."""
         if not self.sid:
             self.login()
 
@@ -260,43 +272,33 @@ class _DsmClient:
         self._ensure_api_paths()
         login_params: dict[str, Any] = {
             "api": AUTH_API,
-            "version": self._version_for(AUTH_API, 6),
+            "version": self._version_for(AUTH_API, 3),
             "method": "login",
             "account": self.username,
             "passwd": self.password,
             "session": "FileStation",
             "format": "sid",
             "enable_device_token": "yes",
-            "device_name": "E-Connect",
         }
 
-        # 2FA Step Persistence: If we have a previously saved trusted device token (device_id),
-        # pass it so DSM omits OTP verification!
+        # If we previously established 2FA trust with this DSM, provide device_id to bypass OTP prompt
         if self.device_id:
             login_params["device_id"] = self.device_id
+            login_params["device_name"] = "E-Connect Smart Home Hub"
         elif self.otp_code:
             login_params["otp_code"] = self.otp_code
+            login_params["device_name"] = "E-Connect Smart Home Hub"
 
-        response = self._request(
-            self.api_paths.get(AUTH_API, "/webapi/entry.cgi"),
-            login_params,
-        )
+        path = self.api_paths.get(AUTH_API, "/webapi/entry.cgi")
+        response = self._request(path, login_params)
 
         if response.get("success") is not True:
             error = response.get("error") if isinstance(response.get("error"), dict) else {}
             code = error.get("code")
 
-            if code == 403:
-                errors = error.get("errors") if isinstance(error.get("errors"), dict) else {}
-                types = [t.get("type") for t in errors.get("types", []) if isinstance(t, dict)]
-                if "otp" in types or not self.otp_code:
-                    raise ExtensionRuntimeError(
-                        "Tài khoản Synology NAS đang bật bảo mật 2 bước (2FA OTP). Vui lòng nhập mã OTP 6 số hiện tại trong cấu hình để liên kết thiết bị.",
-                        mark_offline=True,
-                        connection_failed=True,
-                    )
+            if code in (403, 404) and not self.otp_code and not self.device_id:
                 raise ExtensionRuntimeError(
-                    "Xác thực 2 bước (2FA) thất bại (DSM error 403).",
+                    "Tài khoản Synology NAS đang bật bảo mật 2 bước (2FA OTP). Vui lòng nhập mã OTP 6 số hiện tại trong cấu hình để liên kết thiết bị.",
                     mark_offline=True,
                     connection_failed=True,
                 )
@@ -534,6 +536,153 @@ def _extract_storage(data: Any) -> dict[str, Any] | None:
         "free_bytes": total_bytes - used_bytes,
         "used_percent": round((used_bytes / total_bytes) * 100, 2),
         "status": dsm_status,
+    }
+
+
+def _extract_data_protection(storage_raw: Any, system_info: Any) -> dict[str, Any]:
+    """Extract in-depth data protection metrics: RAID topology, Data Scrubbing status, Disks & SMART."""
+    if not isinstance(storage_raw, dict):
+        storage_raw = {}
+    if not isinstance(system_info, dict):
+        system_info = {}
+
+    pools_data = storage_raw.get("storagePools") if isinstance(storage_raw.get("storagePools"), list) else []
+    vols_data = storage_raw.get("volumes") if isinstance(storage_raw.get("volumes"), list) else []
+    disks_data = storage_raw.get("disks") if isinstance(storage_raw.get("disks"), list) else []
+
+    storage_pools: list[dict[str, Any]] = []
+    for p in pools_data:
+        if not isinstance(p, dict):
+            continue
+        dev_type = str(p.get("device_type") or "").strip()
+        status = str(p.get("status") or p.get("summary_status") or "normal").lower()
+        scrub_status = str(p.get("scrubbingStatus") or "").strip()
+        p_size = p.get("size") if isinstance(p.get("size"), dict) else {}
+
+        storage_pools.append({
+            "id": p.get("id"),
+            "name": p.get("desc") or p.get("id") or "Storage Pool 1",
+            "device_type": dev_type,
+            "status": status,
+            "disk_failure_number": _as_non_negative_int(p.get("disk_failure_number")) or 0,
+            "scrubbing_status": scrub_status,
+            "last_done_time": _as_non_negative_int(p.get("last_done_time")),
+            "next_schedule_time": _as_non_negative_int(p.get("next_schedule_time")),
+            "total_bytes": _as_non_negative_int(p_size.get("total")),
+            "used_bytes": _as_non_negative_int(p_size.get("used")),
+        })
+
+    volumes: list[dict[str, Any]] = []
+    for v in vols_data:
+        if not isinstance(v, dict):
+            continue
+        v_size = v.get("size") if isinstance(v.get("size"), dict) else {}
+        volumes.append({
+            "id": v.get("id"),
+            "name": v.get("vol_desc") or v.get("id") or "Volume 1",
+            "fs_type": str(v.get("fs_type") or "btrfs").lower(),
+            "status": str(v.get("status") or v.get("summary_status") or "normal").lower(),
+            "total_bytes": _as_non_negative_int(v_size.get("total")),
+            "used_bytes": _as_non_negative_int(v_size.get("used")),
+        })
+
+    disks: list[dict[str, Any]] = []
+    total_unc = 0
+    healthy_disks_count = 0
+    for idx, d in enumerate(disks_data):
+        if not isinstance(d, dict):
+            continue
+        d_status = str(d.get("status") or "normal").lower()
+        smart_status = str(d.get("smart_status") or "normal").lower()
+        unc = _as_non_negative_int(d.get("unc")) or 0
+        total_unc += unc
+
+        is_healthy = d_status in ("normal", "healthy") and smart_status in ("normal", "healthy") and unc == 0
+        if is_healthy:
+            healthy_disks_count += 1
+
+        disks.append({
+            "id": d.get("id") or f"disk_{idx+1}",
+            "name": d.get("longName") or d.get("name") or f"Drive {idx+1}",
+            "vendor": str(d.get("vendor") or "").strip(),
+            "model": str(d.get("model") or "").strip(),
+            "serial": str(d.get("serial") or "").strip(),
+            "size_total": _as_non_negative_int(d.get("size_total")),
+            "status": d_status,
+            "smart_status": smart_status,
+            "unc": unc,
+            "temp": _as_temperature(d.get("temp")),
+            "slot_id": _as_non_negative_int(d.get("slot_id") or d.get("order")) or (idx + 1),
+        })
+
+    primary_pool = storage_pools[0] if storage_pools else {}
+    primary_vol = volumes[0] if volumes else {}
+
+    dev_type_str = primary_pool.get("device_type", "").lower()
+    if "shr_with_1_disk_protect" in dev_type_str or "shr1" in dev_type_str:
+        raid_name = "Synology Hybrid RAID (SHR)"
+        fault_tolerance = "Chịu lỗi 1 ổ đĩa"
+    elif "shr_with_2_disk_protect" in dev_type_str or "shr2" in dev_type_str:
+        raid_name = "Synology Hybrid RAID (SHR-2)"
+        fault_tolerance = "Chịu lỗi 2 ổ đĩa"
+    elif "raid_1" in dev_type_str or "raid1" in dev_type_str:
+        raid_name = "RAID 1 (Mirror)"
+        fault_tolerance = "Chịu lỗi 1 ổ đĩa"
+    elif "raid_5" in dev_type_str or "raid5" in dev_type_str:
+        raid_name = "RAID 5"
+        fault_tolerance = "Chịu lỗi 1 ổ đĩa"
+    elif "raid_6" in dev_type_str or "raid6" in dev_type_str:
+        raid_name = "RAID 6"
+        fault_tolerance = "Chịu lỗi 2 ổ đĩa"
+    elif "raid_0" in dev_type_str or "basic" in dev_type_str:
+        raid_name = "Basic / RAID 0"
+        fault_tolerance = "Không chịu lỗi"
+    elif dev_type_str:
+        raid_name = dev_type_str.upper()
+        fault_tolerance = "Bảo vệ mảng RAID"
+    else:
+        raid_name = "SHR / RAID"
+        fault_tolerance = "Bảo vệ dữ liệu"
+
+    pool_status = primary_pool.get("status", "normal")
+    has_failed_disks = any(d.get("status") in ("crashed", "danger", "error", "fail", "degraded") for d in disks)
+    if pool_status in ("crashed", "danger", "error") or primary_pool.get("disk_failure_number", 0) > 0:
+        overall = "crashed"
+    elif pool_status in ("degraded", "warning") or has_failed_disks:
+        overall = "degraded"
+    elif total_unc > 0:
+        overall = "warning"
+    else:
+        overall = "safe"
+
+    summary = {
+        "overall": overall,
+        "raid_type": primary_pool.get("device_type", ""),
+        "raid_name": raid_name,
+        "fault_tolerance": fault_tolerance,
+        "pool_status": pool_status,
+        "total_drives": len(disks),
+        "healthy_drives": healthy_disks_count,
+        "total_bad_sectors": total_unc,
+        "scrubbing_status": primary_pool.get("scrubbing_status", ""),
+        "scrubbing_last_done": primary_pool.get("last_done_time"),
+        "scrubbing_next_schedule": primary_pool.get("next_schedule_time"),
+        "filesystem": primary_vol.get("fs_type", "btrfs"),
+    }
+
+    system = {
+        "model": system_info.get("model"),
+        "firmware_ver": system_info.get("firmware_ver"),
+        "uptime": system_info.get("up_time"),
+        "ram_mb": system_info.get("ram_size"),
+    }
+
+    return {
+        "summary": summary,
+        "storage_pools": storage_pools,
+        "volumes": volumes,
+        "disks": disks,
+        "system": system,
     }
 
 

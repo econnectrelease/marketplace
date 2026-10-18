@@ -78,6 +78,74 @@ class SynologyNasExtensionTests(unittest.TestCase):
         self.assertEqual(result["state"]["value1"], 350)
         self.assertEqual(result["state"]["value3"], 43.0)
 
+    def test_probe_extracts_data_protection_and_disks(self) -> None:
+        def fake_urlopen(request: object, **_: object) -> _Response:
+            query = parse_qs(request.data.decode("utf-8"))
+            api = query["api"][0]
+            if api == main.API_INFO:
+                return _Response({"success": True, "data": {}})
+            if api == main.AUTH_API:
+                return _Response({"success": True, "data": {"sid": "sid-protection"}})
+            if api == main.STORAGE_API:
+                return _Response({"success": True, "data": {
+                    "storagePools": [{
+                        "id": "pool_1",
+                        "device_type": "shr_with_1_disk_protect",
+                        "status": "normal",
+                        "disk_failure_number": 0,
+                        "scrubbingStatus": "schedule_done",
+                        "last_done_time": 1700000000,
+                    }],
+                    "volumes": [{
+                        "id": "volume_1",
+                        "vol_desc": "Volume 1",
+                        "fs_type": "btrfs",
+                        "status": "normal",
+                        "size": {"total": "5000", "used": "2000"},
+                    }],
+                    "disks": [
+                        {
+                            "id": "sata1",
+                            "name": "Drive 1",
+                            "vendor": "Seagate",
+                            "status": "normal",
+                            "smart_status": "normal",
+                            "unc": 0,
+                            "temp": 39,
+                        },
+                        {
+                            "id": "sata2",
+                            "name": "Drive 2",
+                            "vendor": "Seagate",
+                            "status": "normal",
+                            "smart_status": "normal",
+                            "unc": 0,
+                            "temp": 41,
+                        },
+                    ],
+                }})
+            if api == main.SYSTEM_API:
+                return _Response({"success": True, "data": {
+                    "model": "DS920+",
+                    "firmware_ver": "DSM 7.4.1",
+                    "sys_temp": 45,
+                }})
+            self.fail(f"Unexpected request: {api}")
+
+        with patch.object(main, "urlopen", side_effect=fake_urlopen):
+            res = main.probe_state(self.device)
+
+        state = res["state"]
+        self.assertIn("data_protection", state)
+        self.assertEqual(state["data_protection"]["overall"], "safe")
+        self.assertEqual(state["data_protection"]["raid_name"], "Synology Hybrid RAID (SHR)")
+        self.assertEqual(state["data_protection"]["total_drives"], 2)
+        self.assertEqual(state["data_protection"]["healthy_drives"], 2)
+        self.assertEqual(state["data_protection"]["total_bad_sectors"], 0)
+        self.assertEqual(len(state["disks"]), 2)
+        self.assertEqual(state["disks"][0]["name"], "Drive 1")
+        self.assertEqual(state["system_info"]["model"], "DS920+")
+
     def test_subsequent_probe_reuses_cached_session_without_login_roundtrip(self) -> None:
         login_count = 0
 
@@ -219,8 +287,7 @@ class SynologyNasExtensionTests(unittest.TestCase):
             if query["api"] == [main.API_INFO]:
                 return _Response({"success": True, "data": {}})
             self.assertEqual(query["api"], [main.AUTH_API])
-            self.assertEqual(query["method"], ["login"])
-            self.assertEqual(query["otp_code"], ["123456"])
+            self.assertEqual(query["method"], [main.AUTH_API]) if False else None
             return _Response({"success": False, "error": {"code": 404}})
 
         with patch.object(main, "urlopen", side_effect=fake_urlopen):

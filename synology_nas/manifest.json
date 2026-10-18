@@ -2,7 +2,7 @@
   "manifest_version": "1.0",
   "extension_id": "synology_nas",
   "name": "Synology NAS Monitor",
-  "version": "1.0.2",
+  "version": "1.2.0",
   "author": "E-Connect Team",
   "contributor": "ryzen30xx",
   "icon": "storage",
@@ -11,7 +11,7 @@
     "sensor",
     "3rd party"
   ],
-  "description": "Theo dõi NAS Synology DSM trên mạng LAN: dung lượng đã dùng/tổng, nhiệt độ hệ thống khi DSM hỗ trợ và trạng thái kết nối.",
+  "description": "Theo dõi NAS Synology DSM: dung lượng lưu trữ, nhiệt độ hệ thống, cơ chế bảo vệ dữ liệu RAID, tính toàn vẹn Data Scrubbing và sức khỏe ổ đĩa S.M.A.R.T.",
   "provider": {
     "key": "synology",
     "display_name": "Synology DSM"
@@ -31,7 +31,7 @@
       "device_type": "sensor",
       "name": "Synology NAS",
       "default_name": "Synology NAS",
-      "description": "Thiết bị chỉ-đọc hiển thị trạng thái DSM, dung lượng lưu trữ và nhiệt độ hệ thống nếu NAS cung cấp dữ liệu này.",
+      "description": "Thiết bị giám sát NAS Synology: Trạng thái DSM, dung lượng lưu trữ, nhiệt độ, bảo vệ dữ liệu RAID và sức khỏe ổ đĩa.",
       "display": {
         "card_type": "sensor",
         "capabilities": [
@@ -68,44 +68,42 @@
         "col_span": 2
       },
       "config_schema": {
-        "fields": [
-          {
-            "key": "base_url",
-            "label": "Địa chỉ DSM (ví dụ: https://192.168.1.10:5001)",
+        "type": "object",
+        "required": [
+          "base_url",
+          "username",
+          "password"
+        ],
+        "properties": {
+          "base_url": {
             "type": "string",
-            "required": true,
-            "description": "URL đầy đủ của giao diện DSM (bao gồm cổng, vd: https://192.168.2.230:5001)."
+            "format": "uri",
+            "title": "Địa chỉ DSM",
+            "description": "URL DSM gồm giao thức và cổng (ví dụ: https://192.168.1.100:5001)."
           },
-          {
-            "key": "username",
-            "label": "Tài khoản DSM",
+          "username": {
             "type": "string",
-            "required": true,
-            "description": "Tên tài khoản người dùng trên NAS Synology."
+            "title": "Tài khoản",
+            "description": "Tên người dùng có quyền đọc thông tin DSM."
           },
-          {
-            "key": "password",
-            "label": "Mật khẩu DSM",
-            "type": "password",
-            "required": true,
-            "description": "Mật khẩu của tài khoản DSM."
-          },
-          {
-            "key": "otp_code",
-            "label": "Mã xác minh 2 bước DSM (OTP 2FA)",
+          "password": {
             "type": "string",
-            "required": false,
-            "description": "Nhập mã TOTP 6 số từ Google Authenticator hoặc Synology Secure SignIn nếu tài khoản DSM bật 2FA. Bỏ trống nếu không bật 2FA."
+            "format": "password",
+            "title": "Mật khẩu",
+            "description": "Mật khẩu người dùng DSM."
           },
-          {
-            "key": "verify_tls",
-            "label": "Xác thực chứng chỉ TLS",
+          "otp_code": {
+            "type": "string",
+            "title": "Mã xác thực 2 bước (OTP)",
+            "description": "Nhập mã OTP 6 số hiện tại nếu tài khoản NAS đang bật bảo mật 2 lớp (2FA). Hệ thống sẽ tự động ghi nhớ thiết bị tin cậy và không cần nhập lại mã các lần tiếp theo."
+          },
+          "verify_tls": {
             "type": "boolean",
-            "required": false,
             "default": false,
-            "description": "Bỏ chọn nếu NAS dùng chứng chỉ tự ký (self-signed SSL) trong mạng LAN."
+            "title": "Xác thực TLS/SSL",
+            "description": "Bật xác thực nếu DSM dùng chứng chỉ CA hợp lệ. Tắt nếu dùng chứng chỉ tự ký trên mạng nội bộ."
           }
-        ]
+        }
       }
     }
   ]
