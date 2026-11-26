@@ -54,7 +54,6 @@ _MEMORY_SESSION_CACHE: dict[str, dict[str, Any]] = {}
 def _resolve_session_dir() -> Path:
     """Find a reliable persistent directory for session cache files."""
     candidates = [
-        Path("/var/lib/econnect/data/sessions"),
         Path.home() / ".econnect" / "synology_sessions",
         Path(tempfile.gettempdir()) / "econnect_synology_sessions",
         Path("/tmp") / "econnect_synology_sessions",

@@ -356,7 +356,7 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
                 f"{ext_dir.name}: Invalid contributor username '{contributor}'. Must be a valid GitHub username."
             )
 
-    # 5b. Check icon (optional Material Icon identifier)
+    # 5b. Check icon (optional Material Icon identifier or relative asset path)
     raw_icon = manifest_data.get("icon")
     icon = None
     if raw_icon is not None:
@@ -364,7 +364,9 @@ def validate_extension_directory(ext_dir: Path, authors_config: dict[str, Any]) 
             raise ValueError(f"{ext_dir.name}: 'icon' must be a non-empty string.")
         icon = raw_icon.strip()
         if not ICON_PATTERN.fullmatch(icon):
-            raise ValueError(f"{ext_dir.name}: Invalid icon identifier '{icon}'.")
+            icon_file = ext_dir / icon
+            if not (icon_file.is_file() and (icon.startswith("assets/") or icon.endswith(".svg"))):
+                raise ValueError(f"{ext_dir.name}: Invalid icon identifier or asset path '{icon}'.")
 
     # 5c. Check categories (optional list or string)
     raw_categories = manifest_data.get("categories")

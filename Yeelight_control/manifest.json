@@ -5,7 +5,7 @@
   "version": "1.4.2",
   "author": "Experience",
   "contributor": "ryzen30xx",
-  "icon": "lightbulb",
+  "icon": "assets/yeelight.svg",
   "categories": [
     "light",
     "3rd party"
