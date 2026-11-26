@@ -38,6 +38,7 @@ from bambu_mqtt import (
     BambuMQTTClient,
     detect_bambu_model,
     detect_chamber_camera_support,
+    get_bambu_model_capabilities,
     is_valid_bambu_serial,
     resolve_serial_from_tls,
 )
@@ -617,12 +618,18 @@ class BambuDriver:
         # Handle Printer Schema Commands
         client = get_or_create_mqtt_client(effective_config)
 
-        # Check if printer client is currently blocked by Access Control System (firmware 01.05.00.00+)
-        if client.last_error and "ACS" in client.last_error and action != "clear_error":
-            raise ExtensionRuntimeError(
-                f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System (firmware 01.05.00.00+): {client.last_error}",
-                mark_offline=False,
-            )
+        # Check if printer client is currently blocked by Developer Mode or Access Control System
+        if client.last_error and action != "clear_error":
+            if "BAMBU_DEV_MODE_REQUIRED" in client.last_error or "84033543" in client.last_error:
+                raise ExtensionRuntimeError(
+                    "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
+                    mark_offline=False,
+                )
+            if "ACS" in client.last_error:
+                raise ExtensionRuntimeError(
+                    f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System (firmware 01.05.00.00+): {client.last_error}",
+                    mark_offline=False,
+                )
 
         is_automation_toggle = str(command.get("kind") or "").strip().lower() == "action" and "value" in command
 
@@ -724,10 +731,26 @@ class BambuDriver:
             stream_3mf_to_printer(ip, code, stream, filename)
 
         if not cmd_ok:
+            if client.last_error and ("BAMBU_DEV_MODE_REQUIRED" in client.last_error or "84033543" in client.last_error):
+                raise ExtensionRuntimeError(
+                    "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
+                    mark_offline=False,
+                )
+            if client.last_error and "ACS" in client.last_error:
+                raise ExtensionRuntimeError(
+                    f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System: {client.last_error}",
+                    mark_offline=False,
+                )
             raise ExtensionRuntimeError(
                 "Printer is offline or failed to receive MQTT command.",
                 mark_offline=True,
                 connection_failed=True,
+            )
+
+        if client.last_error and ("BAMBU_DEV_MODE_REQUIRED" in client.last_error or "84033543" in client.last_error):
+            raise ExtensionRuntimeError(
+                "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
+                mark_offline=False,
             )
 
         return BambuDriver.probe_state(device)
@@ -774,6 +797,12 @@ class BambuDriver:
         camera = get_or_create_camera_adapter({**effective_config, "serial_number": serial, "model": model})
         stream_url = camera.get_stream_url()
 
+        caps = get_bambu_model_capabilities(model)
+        has_chamber = bool(cached.get("has_chamber", caps["has_chamber"]))
+        has_chamber_fan = bool(cached.get("has_chamber_fan", caps["has_chamber_fan"]))
+        has_aux_fan = bool(cached.get("has_aux_fan", caps["has_aux_fan"]))
+        has_cooling_fan = bool(cached.get("has_cooling_fan", caps.get("has_cooling_fan", True)))
+
         state_payload = {
             "serial_number": serial,
             "value": cached["status"],
@@ -790,11 +819,13 @@ class BambuDriver:
             "target_nozzle_temp": cached.get("target_nozzle_temp", 0),
             "bed_temp": cached["bed_temp"],
             "target_bed_temp": cached.get("target_bed_temp", 0),
-            "chamber_temp": cached.get("chamber_temp", 0.0),
             "cooling_fan_speed": cached.get("cooling_fan_speed", 0),
-            "aux_fan_speed": cached.get("aux_fan_speed", 0),
-            "chamber_fan_speed": cached.get("chamber_fan_speed", 0),
-            "has_chamber_fan": cached.get("has_chamber_fan", False),
+            "aux_fan_speed": cached.get("aux_fan_speed", 0) if has_aux_fan else 0,
+            "chamber_fan_speed": cached.get("chamber_fan_speed", 0) if has_chamber_fan else 0,
+            "has_chamber": has_chamber,
+            "has_chamber_fan": has_chamber_fan,
+            "has_aux_fan": has_aux_fan,
+            "has_cooling_fan": has_cooling_fan,
             "chamber_light": cached.get("chamber_light", "off"),
             "power": cached.get("chamber_light") == "on",
             "model": model,
@@ -803,6 +834,9 @@ class BambuDriver:
             "video_stream": stream_url,
             "stream_url": stream_url,
         }
+
+        if has_chamber:
+            state_payload["chamber_temp"] = cached.get("chamber_temp", 0.0)
 
         return {
             "conn_status": "online" if client.is_connected else "offline",

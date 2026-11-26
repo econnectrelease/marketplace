@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Đinh Trung Kiên. All rights reserved.
 """
 # [INPUT]: depends on ipaddress, socket, ssl, json, os, time, threading, logging, typing (and optional cryptography, paho.mqtt.client)
-# [OUTPUT]: exports BambuMQTTClient, NotificationService, detect_bambu_model, detect_chamber_camera_support, resolve_serial_from_tls, is_valid_bambu_serial
+# [OUTPUT]: exports BambuMQTTClient, NotificationService, detect_bambu_model, detect_chamber_camera_support, get_bambu_model_capabilities, resolve_serial_from_tls, is_valid_bambu_serial
 # [POS]: MQTT telemetry, TLS serial resolution, and command transport client for Bambu Lab 3D printers
 # [PROTOCOL]: Update this header on change
 """
@@ -136,6 +136,37 @@ def detect_bambu_model(serial: str, telemetry: dict[str, Any] | None = None) -> 
         return "A1"
 
     return "P1S"
+
+
+def get_bambu_model_capabilities(model: str | None) -> dict[str, bool]:
+    """Identify hardware capability flags based on Bambu Lab model.
+
+    Capability matrix:
+    - A1, A1_mini: Open-frame bed-slinger, part cooling fan only (no chamber, no chamber fan, no aux fan).
+    - P1P: Open-frame CoreXY, has aux fan, no chamber, no chamber fan.
+    - P1S, X1C, X1E, X1: Enclosed CoreXY, has chamber, chamber fan, aux fan, and cooling fan.
+    """
+    m = (model or "").strip().upper()
+    if "A1" in m:
+        return {
+            "has_chamber": False,
+            "has_chamber_fan": False,
+            "has_aux_fan": False,
+            "has_cooling_fan": True,
+        }
+    if "P1P" in m:
+        return {
+            "has_chamber": False,
+            "has_chamber_fan": False,
+            "has_aux_fan": True,
+            "has_cooling_fan": True,
+        }
+    return {
+        "has_chamber": True,
+        "has_chamber_fan": True,
+        "has_aux_fan": True,
+        "has_cooling_fan": True,
+    }
 
 
 def detect_chamber_camera_support(serial_number: str, model: str | None = None) -> dict[str, Any]:
@@ -374,6 +405,7 @@ class BambuMQTTClient:
         self._lock = threading.Lock()
         self._connect_event = threading.Event()
         self._telemetry_event = threading.Event()
+        caps = get_bambu_model_capabilities(self.model)
         self._last_state: dict[str, Any] = {
             "status": "IDLE",
             "progress": 0,
@@ -383,12 +415,15 @@ class BambuMQTTClient:
             "target_nozzle_temp": 0.0,
             "bed_temp": 0.0,
             "target_bed_temp": 0.0,
-            "chamber_temp": 0.0,
+            "chamber_temp": 0.0 if caps["has_chamber"] else 0.0,
             "chamber_light": "off",
             "cooling_fan_speed": 0,
             "aux_fan_speed": 0,
             "chamber_fan_speed": 0,
-            "has_chamber_fan": ("X1" in (self.model or "").upper() or "P1S" in (self.model or "").upper()),
+            "has_chamber": caps["has_chamber"],
+            "has_chamber_fan": caps["has_chamber_fan"],
+            "has_aux_fan": caps["has_aux_fan"],
+            "has_cooling_fan": caps["has_cooling_fan"],
             "model": self.model,
             "last_updated": 0,
         }
@@ -559,7 +594,11 @@ class BambuMQTTClient:
             if self._client is not None and client is not self._client:
                 return
             self._auth_error = None
-            if self._last_error and not str(self._last_error).startswith("ACS_DENIED"):
+            if (
+                self._last_error
+                and not str(self._last_error).startswith("ACS_DENIED")
+                and not str(self._last_error).startswith("BAMBU_DEV_MODE_REQUIRED")
+            ):
                 self._last_error = None
             self._connected = True
 
@@ -591,6 +630,7 @@ class BambuMQTTClient:
         # Detect printer model from telemetry if not already locked
         detected_model = detect_bambu_model(self.serial_number, payload)
         self.model = detected_model
+        caps = get_bambu_model_capabilities(self.model)
 
         with self._lock:
             self._connected = True
@@ -612,9 +652,12 @@ class BambuMQTTClient:
             except (ValueError, TypeError):
                 bed_temp = 0.0
 
-            try:
-                chamber_temp = float(print_data.get("chamber_temper", self._last_state.get("chamber_temp", 0.0)) or 0.0)
-            except (ValueError, TypeError):
+            if caps["has_chamber"]:
+                try:
+                    chamber_temp = float(print_data.get("chamber_temper", self._last_state.get("chamber_temp", 0.0)) or 0.0)
+                except (ValueError, TypeError):
+                    chamber_temp = 0.0
+            else:
                 chamber_temp = 0.0
 
             try:
@@ -644,29 +687,29 @@ class BambuMQTTClient:
             )
 
             raw_aux = print_data.get("big_fan1_speed")
-            aux_fan_speed = (
-                _parse_fan_speed(raw_aux, self._last_state.get("aux_fan_speed", 0))
-                if raw_aux is not None
-                else self._last_state.get("aux_fan_speed", 0)
-            )
+            if caps["has_aux_fan"]:
+                aux_fan_speed = (
+                    _parse_fan_speed(raw_aux, self._last_state.get("aux_fan_speed", 0))
+                    if raw_aux is not None
+                    else self._last_state.get("aux_fan_speed", 0)
+                )
+            else:
+                aux_fan_speed = 0
 
             raw_chamber = print_data.get("big_fan2_speed")
-            chamber_fan_speed = (
-                _parse_fan_speed(raw_chamber, self._last_state.get("chamber_fan_speed", 0))
-                if raw_chamber is not None
-                else self._last_state.get("chamber_fan_speed", 0)
-            )
-
-            # Chamber fan hardware capability
-            norm_model = (self.model or "").upper()
-            if norm_model in {"A1", "A1_MINI", "A1 MINI"}:
-                has_chamber_fan = False
-            elif norm_model in {"X1", "X1C", "X1E", "P1S"} or "X1" in norm_model or "P1S" in norm_model:
-                has_chamber_fan = True
-            elif raw_chamber is not None and str(raw_chamber).strip() not in {"", "null", "none"}:
-                has_chamber_fan = True
+            if caps["has_chamber_fan"]:
+                chamber_fan_speed = (
+                    _parse_fan_speed(raw_chamber, self._last_state.get("chamber_fan_speed", 0))
+                    if raw_chamber is not None
+                    else self._last_state.get("chamber_fan_speed", 0)
+                )
             else:
-                has_chamber_fan = bool(self._last_state.get("has_chamber_fan", False))
+                chamber_fan_speed = 0
+
+            has_chamber = caps["has_chamber"]
+            has_chamber_fan = caps["has_chamber_fan"]
+            has_aux_fan = caps["has_aux_fan"]
+            has_cooling_fan = caps["has_cooling_fan"]
 
             # Chamber light state
             lights = print_data.get("lights_report")
@@ -676,10 +719,62 @@ class BambuMQTTClient:
                     if light.get("node") == "chamber_light":
                         chamber_light = light.get("mode", "off")
 
+            # Check for MQTT verification failure / Developer Mode required (err_code: 84033543 / 0x5024007 / 0500-0500-0001-0007)
+            err_code_val = (
+                print_data.get("err_code")
+                if print_data.get("err_code") is not None
+                else payload.get("err_code")
+                if payload.get("err_code") is not None
+                else print_data.get("error_code")
+                if print_data.get("error_code") is not None
+                else payload.get("error_code")
+            )
+
+            all_err_texts = [
+                str(err_code_val or ""),
+                str(print_data.get("reason", "")),
+                str(payload.get("reason", "")),
+                str(print_data.get("msg", "")),
+                str(payload.get("msg", "")),
+                str(print_data.get("message", "")),
+                str(payload.get("message", "")),
+            ]
+            combined_err_text = " ".join(all_err_texts).upper()
+
+            is_dev_mode_err = False
+            if err_code_val is not None:
+                try:
+                    if int(err_code_val) in {84033543, 0x5024007}:
+                        is_dev_mode_err = True
+                except (ValueError, TypeError):
+                    pass
+                if str(err_code_val).strip() in {"84033543", "0x5024007", "0x05024007", "05024007"}:
+                    is_dev_mode_err = True
+
+            if (
+                not is_dev_mode_err
+                and (
+                    "84033543" in combined_err_text
+                    or "5024007" in combined_err_text
+                    or "0500-0500-0001-0007" in combined_err_text
+                    or "0500 0500 0001 0007" in combined_err_text
+                    or "MQTT COMMAND VERIFICATION FAILED" in combined_err_text
+                )
+            ):
+                is_dev_mode_err = True
+
             # Check for Access Control System (ACS) denial on firmware 01.05.00.00+
             result_code = str(print_data.get("result", "")).upper()
             reason_code = str(print_data.get("reason", "")).upper()
-            if result_code == "FAILED" and any(
+
+            if is_dev_mode_err:
+                self._last_error = (
+                    "BAMBU_DEV_MODE_REQUIRED: Máy in Bambu Lab từ chối lệnh (err_code: 84033543). "
+                    "Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' "
+                    "(Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN."
+                )
+                logger.warning("Bambu printer dev mode restriction on %s: %s", self.ip, self._last_error)
+            elif result_code == "FAILED" and any(
                 term in reason_code for term in ("ACS", "ACCESS_CONTROL", "DENIED", "134217728", "AUTH")
             ):
                 self._last_error = f"ACS_DENIED: {reason_code or 'Access Control System blocked command'}"
@@ -719,7 +814,10 @@ class BambuMQTTClient:
                 "cooling_fan_speed": cooling_fan_speed,
                 "aux_fan_speed": aux_fan_speed,
                 "chamber_fan_speed": chamber_fan_speed,
+                "has_chamber": has_chamber,
                 "has_chamber_fan": has_chamber_fan,
+                "has_aux_fan": has_aux_fan,
+                "has_cooling_fan": has_cooling_fan,
                 "model": self.model,
                 "last_updated": time.time(),
             })
