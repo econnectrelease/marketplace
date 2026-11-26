@@ -493,11 +493,78 @@ class BambuDriver:
             "request_status",
             "snapshot",
             "clear_error",
+            "set_nozzle_temp",
+            "set_bed_temp",
+            "set_fan_speed",
+            "set_cooling_fan",
+            "set_aux_fan",
+            "set_chamber_fan",
+            "gcode",
         }
         if action not in valid_actions:
             raise ValueError(f"Unsupported Bambu command action '{action}'. Valid: {sorted(valid_actions)}")
 
-        if action == "upload_3mf":
+        if action == "set_nozzle_temp":
+            val = (
+                command.get("temperature")
+                if command.get("temperature") is not None
+                else command.get("temp")
+                if command.get("temp") is not None
+                else command.get("target_temp")
+                if command.get("target_temp") is not None
+                else command.get("value")
+            )
+            if val is None:
+                raise ValueError("Action 'set_nozzle_temp' requires 'temperature', 'temp', 'target_temp', or 'value'.")
+            try:
+                t = float(val)
+                if t < 0 or t > 350:
+                    raise ValueError(f"Nozzle temperature {t}°C is out of allowable range (0-350°C).")
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid nozzle temperature parameter: {exc}")
+
+        elif action == "set_bed_temp":
+            val = (
+                command.get("temperature")
+                if command.get("temperature") is not None
+                else command.get("temp")
+                if command.get("temp") is not None
+                else command.get("target_temp")
+                if command.get("target_temp") is not None
+                else command.get("value")
+            )
+            if val is None:
+                raise ValueError("Action 'set_bed_temp' requires 'temperature', 'temp', 'target_temp', or 'value'.")
+            try:
+                t = float(val)
+                if t < 0 or t > 150:
+                    raise ValueError(f"Bed temperature {t}°C is out of allowable range (0-150°C).")
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid bed temperature parameter: {exc}")
+
+        elif action in {"set_fan_speed", "set_cooling_fan", "set_aux_fan", "set_chamber_fan"}:
+            val = (
+                command.get("speed")
+                if command.get("speed") is not None
+                else command.get("speed_pct")
+                if command.get("speed_pct") is not None
+                else command.get("value")
+            )
+            if val is None:
+                raise ValueError(f"Action '{action}' requires 'speed' or 'value'.")
+            try:
+                s = float(val)
+                if s < 0 or s > 100:
+                    raise ValueError(f"Fan speed {s}% is out of allowable range (0-100%).")
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid fan speed parameter: {exc}")
+
+        elif action == "gcode":
+            gcode_str = command.get("gcode") or command.get("param") or command.get("value")
+            if not gcode_str or not isinstance(gcode_str, str):
+                raise ValueError("Action 'gcode' requires a non-empty string in 'gcode', 'param', or 'value'.")
+
+        elif action == "upload_3mf":
             filename = command.get("filename")
             if not filename or not isinstance(filename, str):
                 raise ValueError("Action 'upload_3mf' requires a non-empty string 'filename'.")
@@ -579,6 +646,68 @@ class BambuDriver:
             cmd_ok = client.stop_print()
         elif action == "request_status":
             cmd_ok = client.request_full_status()
+        elif action == "set_nozzle_temp":
+            val = (
+                command.get("temperature")
+                if command.get("temperature") is not None
+                else command.get("temp")
+                if command.get("temp") is not None
+                else command.get("target_temp")
+                if command.get("target_temp") is not None
+                else command.get("value", 0)
+            )
+            cmd_ok = client.set_nozzle_temperature(float(val))
+        elif action == "set_bed_temp":
+            val = (
+                command.get("temperature")
+                if command.get("temperature") is not None
+                else command.get("temp")
+                if command.get("temp") is not None
+                else command.get("target_temp")
+                if command.get("target_temp") is not None
+                else command.get("value", 0)
+            )
+            cmd_ok = client.set_bed_temperature(float(val))
+        elif action == "set_fan_speed":
+            fan = str(command.get("fan") or command.get("fan_type") or "cooling")
+            val = (
+                command.get("speed")
+                if command.get("speed") is not None
+                else command.get("speed_pct")
+                if command.get("speed_pct") is not None
+                else command.get("value", 0)
+            )
+            cmd_ok = client.set_fan_speed(fan, float(val))
+        elif action == "set_cooling_fan":
+            val = (
+                command.get("speed")
+                if command.get("speed") is not None
+                else command.get("speed_pct")
+                if command.get("speed_pct") is not None
+                else command.get("value", 0)
+            )
+            cmd_ok = client.set_fan_speed("cooling", float(val))
+        elif action == "set_aux_fan":
+            val = (
+                command.get("speed")
+                if command.get("speed") is not None
+                else command.get("speed_pct")
+                if command.get("speed_pct") is not None
+                else command.get("value", 0)
+            )
+            cmd_ok = client.set_fan_speed("aux", float(val))
+        elif action == "set_chamber_fan":
+            val = (
+                command.get("speed")
+                if command.get("speed") is not None
+                else command.get("speed_pct")
+                if command.get("speed_pct") is not None
+                else command.get("value", 0)
+            )
+            cmd_ok = client.set_fan_speed("chamber", float(val))
+        elif action == "gcode":
+            gcode_line = str(command.get("gcode") or command.get("param") or command.get("value") or "")
+            cmd_ok = client.send_gcode(gcode_line)
         elif action == "upload_3mf":
             filename = str(command["filename"])
             raw_data = command.get("file_data")
@@ -658,8 +787,14 @@ class BambuDriver:
             "remaining_time": cached["remaining_time"],
             "subtask_name": cached["subtask_name"],
             "nozzle_temp": cached["nozzle_temp"],
+            "target_nozzle_temp": cached.get("target_nozzle_temp", 0),
             "bed_temp": cached["bed_temp"],
+            "target_bed_temp": cached.get("target_bed_temp", 0),
             "chamber_temp": cached.get("chamber_temp", 0.0),
+            "cooling_fan_speed": cached.get("cooling_fan_speed", 0),
+            "aux_fan_speed": cached.get("aux_fan_speed", 0),
+            "chamber_fan_speed": cached.get("chamber_fan_speed", 0),
+            "has_chamber_fan": cached.get("has_chamber_fan", False),
             "chamber_light": cached.get("chamber_light", "off"),
             "power": cached.get("chamber_light") == "on",
             "model": model,

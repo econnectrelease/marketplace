@@ -180,6 +180,21 @@ def _is_ip_address(value: str) -> bool:
         return False
 
 
+def _parse_fan_speed(raw: Any, fallback: int = 0) -> int:
+    """Convert fan speed representation (0-15 level or 0-100 percentage) to integer percentage 0-100."""
+    if raw is None:
+        return fallback
+    try:
+        val = float(raw)
+        if val <= 0:
+            return 0
+        if val <= 15:
+            return int(round(val * 100.0 / 15.0))
+        return int(round(min(100.0, max(0.0, val))))
+    except (ValueError, TypeError):
+        return fallback
+
+
 def is_valid_bambu_serial(candidate: str | None) -> bool:
     """Return True if candidate matches Bambu Lab serial constraints (alnum, len>=10, not IP)."""
     if not isinstance(candidate, str):
@@ -365,10 +380,15 @@ class BambuMQTTClient:
             "remaining_time": 0,
             "subtask_name": "",
             "nozzle_temp": 0.0,
+            "target_nozzle_temp": 0.0,
             "bed_temp": 0.0,
+            "target_bed_temp": 0.0,
             "chamber_temp": 0.0,
             "chamber_light": "off",
             "cooling_fan_speed": 0,
+            "aux_fan_speed": 0,
+            "chamber_fan_speed": 0,
+            "has_chamber_fan": ("X1" in (self.model or "").upper() or "P1S" in (self.model or "").upper()),
             "model": self.model,
             "last_updated": 0,
         }
@@ -597,6 +617,57 @@ class BambuMQTTClient:
             except (ValueError, TypeError):
                 chamber_temp = 0.0
 
+            try:
+                raw_target_nozzle = print_data.get("nozzle_target_temper")
+                if raw_target_nozzle is not None:
+                    target_nozzle_temp = float(raw_target_nozzle)
+                else:
+                    target_nozzle_temp = float(self._last_state.get("target_nozzle_temp", 0.0))
+            except (ValueError, TypeError):
+                target_nozzle_temp = float(self._last_state.get("target_nozzle_temp", 0.0))
+
+            try:
+                raw_target_bed = print_data.get("bed_target_temper")
+                if raw_target_bed is not None:
+                    target_bed_temp = float(raw_target_bed)
+                else:
+                    target_bed_temp = float(self._last_state.get("target_bed_temp", 0.0))
+            except (ValueError, TypeError):
+                target_bed_temp = float(self._last_state.get("target_bed_temp", 0.0))
+
+            # Fan speeds: cooling_fan_speed, big_fan1_speed (aux), big_fan2_speed (chamber)
+            raw_cooling = print_data.get("cooling_fan_speed")
+            cooling_fan_speed = (
+                _parse_fan_speed(raw_cooling, self._last_state.get("cooling_fan_speed", 0))
+                if raw_cooling is not None
+                else self._last_state.get("cooling_fan_speed", 0)
+            )
+
+            raw_aux = print_data.get("big_fan1_speed")
+            aux_fan_speed = (
+                _parse_fan_speed(raw_aux, self._last_state.get("aux_fan_speed", 0))
+                if raw_aux is not None
+                else self._last_state.get("aux_fan_speed", 0)
+            )
+
+            raw_chamber = print_data.get("big_fan2_speed")
+            chamber_fan_speed = (
+                _parse_fan_speed(raw_chamber, self._last_state.get("chamber_fan_speed", 0))
+                if raw_chamber is not None
+                else self._last_state.get("chamber_fan_speed", 0)
+            )
+
+            # Chamber fan hardware capability
+            norm_model = (self.model or "").upper()
+            if norm_model in {"A1", "A1_MINI", "A1 MINI"}:
+                has_chamber_fan = False
+            elif norm_model in {"X1", "X1C", "X1E", "P1S"} or "X1" in norm_model or "P1S" in norm_model:
+                has_chamber_fan = True
+            elif raw_chamber is not None and str(raw_chamber).strip() not in {"", "null", "none"}:
+                has_chamber_fan = True
+            else:
+                has_chamber_fan = bool(self._last_state.get("has_chamber_fan", False))
+
             # Chamber light state
             lights = print_data.get("lights_report")
             chamber_light = self._last_state.get("chamber_light", "off")
@@ -640,9 +711,15 @@ class BambuMQTTClient:
                 "remaining_time": remaining_time,
                 "subtask_name": subtask_name,
                 "nozzle_temp": nozzle_temp,
+                "target_nozzle_temp": target_nozzle_temp,
                 "bed_temp": bed_temp,
+                "target_bed_temp": target_bed_temp,
                 "chamber_temp": chamber_temp,
                 "chamber_light": chamber_light,
+                "cooling_fan_speed": cooling_fan_speed,
+                "aux_fan_speed": aux_fan_speed,
+                "chamber_fan_speed": chamber_fan_speed,
+                "has_chamber_fan": has_chamber_fan,
                 "model": self.model,
                 "last_updated": time.time(),
             })
@@ -720,5 +797,82 @@ class BambuMQTTClient:
                 "command": "ledctrl",
                 "led_node": "chamber_light",
                 "led_mode": mode_str,
+            }
+        })
+
+    def set_nozzle_temperature(self, temp: int | float) -> bool:
+        """Set target nozzle temperature (°C) clamped between 0 and 300°C."""
+        try:
+            val = float(temp)
+        except (ValueError, TypeError):
+            val = 0.0
+        clamped = max(0, min(300, int(round(val))))
+        with self._lock:
+            self._last_state["target_nozzle_temp"] = clamped
+        return self.publish_request({
+            "print": {
+                "sequence_id": "0",
+                "command": "gcode_line",
+                "param": f"M104 S{clamped}\n",
+            }
+        })
+
+    def set_bed_temperature(self, temp: int | float) -> bool:
+        """Set target heated bed temperature (°C) clamped between 0 and 120°C."""
+        try:
+            val = float(temp)
+        except (ValueError, TypeError):
+            val = 0.0
+        clamped = max(0, min(120, int(round(val))))
+        with self._lock:
+            self._last_state["target_bed_temp"] = clamped
+        return self.publish_request({
+            "print": {
+                "sequence_id": "0",
+                "command": "gcode_line",
+                "param": f"M140 S{clamped}\n",
+            }
+        })
+
+    def set_fan_speed(self, fan_type: str, speed_pct: int | float) -> bool:
+        """Set fan speed percentage (0-100%) for cooling/part (P1), aux (P2), or chamber (P3) fan."""
+        ft = str(fan_type or "").strip().lower()
+        if ft in ("aux", "aux_fan", "big_fan1", "p2", "2"):
+            p_num = 2
+            state_key = "aux_fan_speed"
+        elif ft in ("chamber", "chamber_fan", "big_fan2", "p3", "3"):
+            p_num = 3
+            state_key = "chamber_fan_speed"
+        else:
+            p_num = 1
+            state_key = "cooling_fan_speed"
+
+        try:
+            val = float(speed_pct)
+        except (ValueError, TypeError):
+            val = 0.0
+        pct = max(0.0, min(100.0, val))
+        pwm = int(pct * 255 / 100)
+        with self._lock:
+            self._last_state[state_key] = int(round(pct))
+
+        return self.publish_request({
+            "print": {
+                "sequence_id": "0",
+                "command": "gcode_line",
+                "param": f"M106 P{p_num} S{pwm}\n",
+            }
+        })
+
+    def send_gcode(self, gcode_line: str) -> bool:
+        """Send a raw GCODE line to the printer."""
+        line = str(gcode_line or "").strip()
+        if not line:
+            return False
+        return self.publish_request({
+            "print": {
+                "sequence_id": "0",
+                "command": "gcode_line",
+                "param": f"{line}\n",
             }
         })
