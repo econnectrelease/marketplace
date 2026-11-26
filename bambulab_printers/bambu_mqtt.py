@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Đinh Trung Kiên. All rights reserved.
 """
 # [INPUT]: depends on ipaddress, socket, ssl, json, os, time, threading, logging, typing (and optional cryptography, paho.mqtt.client)
-# [OUTPUT]: exports BambuMQTTClient, NotificationService, detect_bambu_model, detect_chamber_camera_support, get_bambu_model_capabilities, resolve_serial_from_tls, is_valid_bambu_serial
+# [OUTPUT]: exports BambuMQTTClient, NotificationService, BAMBU_STAGE_MAP, detect_bambu_model, detect_chamber_camera_support, get_bambu_model_capabilities, resolve_serial_from_tls, is_valid_bambu_serial
 # [POS]: MQTT telemetry, TLS serial resolution, and command transport client for Bambu Lab 3D printers
 # [PROTOCOL]: Update this header on change
 """
@@ -24,6 +24,25 @@ try:
     import paho.mqtt.client as mqtt
 except ImportError:
     mqtt = None
+
+BAMBU_STAGE_MAP: dict[int, str] = {
+    0: "idle",
+    1: "bed_leveling",
+    2: "heatbed_preheating",
+    3: "sweeping_xy_mech_mode",
+    4: "changing_filament",
+    5: "m400_pause",
+    6: "paused_user",
+    7: "flow_calib",
+    8: "scanning_bed_surface",
+    9: "inspecting_first_layer",
+    10: "identifying_build_plate",
+    11: "calibrating_micro_lidar",
+    12: "homing_toolhead",
+    13: "cleaning_nozzle_tip",
+    14: "checking_extruder_temp",
+    15: "printing",
+}
 
 
 class NotificationService:
@@ -408,6 +427,11 @@ class BambuMQTTClient:
         caps = get_bambu_model_capabilities(self.model)
         self._last_state: dict[str, Any] = {
             "status": "IDLE",
+            "stage": "idle",
+            "stg_cur": 0,
+            "stg": [],
+            "layer_num": 0,
+            "total_layer_num": 0,
             "progress": 0,
             "remaining_time": 0,
             "subtask_name": "",
@@ -430,6 +454,17 @@ class BambuMQTTClient:
         self._previous_gcode_state: str = "IDLE"
         self._last_error: str | None = None
         self._auth_error: str | None = None
+        self._sequence_id: int = int(time.time() * 1000) % 1000000
+
+    def _next_sequence_id(self) -> str:
+        """Return dynamic incrementing sequence ID for Bambu MQTT command payloads."""
+        with self._lock:
+            now_ms = int(time.time() * 1000) % 1000000
+            if now_ms <= self._sequence_id and self._sequence_id < 999999:
+                self._sequence_id += 1
+            else:
+                self._sequence_id = now_ms
+            return str(self._sequence_id)
 
     @property
     def auth_error(self) -> str | None:
@@ -719,6 +754,56 @@ class BambuMQTTClient:
                     if light.get("node") == "chamber_light":
                         chamber_light = light.get("mode", "off")
 
+            # Printing stage parsing: stg_cur, stg, layer_num, total_layer_num
+            raw_stg_cur = print_data.get("stg_cur")
+            if raw_stg_cur is None and isinstance(print_data.get("stg"), (int, str)):
+                raw_stg_cur = print_data.get("stg")
+
+            stg_cur: int | None = None
+            if raw_stg_cur is not None:
+                try:
+                    stg_cur = int(raw_stg_cur)
+                except (ValueError, TypeError):
+                    stg_cur = None
+
+            if stg_cur is not None:
+                stage = BAMBU_STAGE_MAP.get(stg_cur, f"stage_{stg_cur}")
+            else:
+                status_key = current_state.upper()
+                if status_key in ("IDLE", "STANDBY", "INIT", "FINISH", "FAILED"):
+                    stage = "idle"
+                    stg_cur = 0
+                elif status_key in ("PRINTING", "RUNNING", "PREPARE"):
+                    stage = "printing"
+                    stg_cur = 15
+                elif status_key in ("PAUSE", "PAUSED"):
+                    stage = "paused"
+                    stg_cur = 6
+                else:
+                    stage = str(self._last_state.get("stage", "idle"))
+                    stg_cur = self._last_state.get("stg_cur", 0)
+
+            raw_stg = print_data.get("stg")
+            stg = raw_stg if raw_stg is not None else self._last_state.get("stg", [])
+
+            raw_layer_num = print_data.get("layer_num")
+            if raw_layer_num is not None:
+                try:
+                    layer_num = int(raw_layer_num)
+                except (ValueError, TypeError):
+                    layer_num = int(self._last_state.get("layer_num", 0))
+            else:
+                layer_num = int(self._last_state.get("layer_num", 0))
+
+            raw_total_layer_num = print_data.get("total_layer_num")
+            if raw_total_layer_num is not None:
+                try:
+                    total_layer_num = int(raw_total_layer_num)
+                except (ValueError, TypeError):
+                    total_layer_num = int(self._last_state.get("total_layer_num", 0))
+            else:
+                total_layer_num = int(self._last_state.get("total_layer_num", 0))
+
             # Check for MQTT verification failure / Developer Mode required (err_code: 84033543 / 0x5024007 / 0500-0500-0001-0007)
             err_code_val = (
                 print_data.get("err_code")
@@ -802,6 +887,11 @@ class BambuMQTTClient:
 
             self._last_state.update({
                 "status": current_state,
+                "stage": stage,
+                "stg_cur": stg_cur,
+                "stg": stg,
+                "layer_num": layer_num,
+                "total_layer_num": total_layer_num,
                 "progress": progress,
                 "remaining_time": remaining_time,
                 "subtask_name": subtask_name,
@@ -827,6 +917,13 @@ class BambuMQTTClient:
 
     def publish_request(self, payload: dict[str, Any]) -> bool:
         """Publish a command JSON payload to device/{serial}/request."""
+        with self._lock:
+            self._last_error = None
+
+        for section in payload.values():
+            if isinstance(section, dict) and section.get("sequence_id") == "0":
+                section["sequence_id"] = self._next_sequence_id()
+
         topic = f"device/{self.serial_number}/request"
         body = json.dumps(payload)
 
@@ -854,7 +951,7 @@ class BambuMQTTClient:
         """Request full state dump (pushall) from the printer."""
         return self.publish_request({
             "pushing": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "pushall",
             }
         })
@@ -863,7 +960,7 @@ class BambuMQTTClient:
         """Pause active printing."""
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "pause",
             }
         })
@@ -872,7 +969,7 @@ class BambuMQTTClient:
         """Resume paused printing."""
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "resume",
             }
         })
@@ -881,7 +978,7 @@ class BambuMQTTClient:
         """Stop / cancel printing."""
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "stop",
             }
         })
@@ -891,7 +988,7 @@ class BambuMQTTClient:
         mode_str = "on" if on else "off"
         return self.publish_request({
             "system": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "ledctrl",
                 "led_node": "chamber_light",
                 "led_mode": mode_str,
@@ -909,7 +1006,7 @@ class BambuMQTTClient:
             self._last_state["target_nozzle_temp"] = clamped
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "gcode_line",
                 "param": f"M104 S{clamped}\n",
             }
@@ -926,7 +1023,7 @@ class BambuMQTTClient:
             self._last_state["target_bed_temp"] = clamped
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "gcode_line",
                 "param": f"M140 S{clamped}\n",
             }
@@ -956,7 +1053,7 @@ class BambuMQTTClient:
 
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "gcode_line",
                 "param": f"M106 P{p_num} S{pwm}\n",
             }
@@ -969,7 +1066,7 @@ class BambuMQTTClient:
             return False
         return self.publish_request({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self._next_sequence_id(),
                 "command": "gcode_line",
                 "param": f"{line}\n",
             }

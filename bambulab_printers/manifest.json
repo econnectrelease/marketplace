@@ -2,7 +2,7 @@
   "manifest_version": "2.0",
   "extension_id": "bambulab_printers",
   "name": "Bambu Lab 3D Printers",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "Experience Team",
   "contributor": "ryzen30xx",
   "icon": "assets/bambulab.svg",

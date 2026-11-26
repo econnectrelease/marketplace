@@ -618,18 +618,8 @@ class BambuDriver:
         # Handle Printer Schema Commands
         client = get_or_create_mqtt_client(effective_config)
 
-        # Check if printer client is currently blocked by Developer Mode or Access Control System
-        if client.last_error and action != "clear_error":
-            if "BAMBU_DEV_MODE_REQUIRED" in client.last_error or "84033543" in client.last_error:
-                raise ExtensionRuntimeError(
-                    "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
-                    mark_offline=False,
-                )
-            if "ACS" in client.last_error:
-                raise ExtensionRuntimeError(
-                    f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System (firmware 01.05.00.00+): {client.last_error}",
-                    mark_offline=False,
-                )
+        # Clear any prior recorded error on new command execution so old errors do not permanently block commands
+        client.clear_error()
 
         is_automation_toggle = str(command.get("kind") or "").strip().lower() == "action" and "value" in command
 
@@ -752,6 +742,11 @@ class BambuDriver:
                 "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
                 mark_offline=False,
             )
+        if client.last_error and "ACS" in client.last_error:
+            raise ExtensionRuntimeError(
+                f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System: {client.last_error}",
+                mark_offline=False,
+            )
 
         return BambuDriver.probe_state(device)
 
@@ -812,6 +807,10 @@ class BambuDriver:
             "value4": cached["nozzle_temp"],
             "value5": cached["bed_temp"],
             "status": cached["status"],
+            "stage": cached.get("stage", "idle"),
+            "stg_cur": cached.get("stg_cur", 0),
+            "layer_num": cached.get("layer_num", 0),
+            "total_layer_num": cached.get("total_layer_num", 0),
             "progress": cached["progress"],
             "remaining_time": cached["remaining_time"],
             "subtask_name": cached["subtask_name"],
@@ -834,6 +833,9 @@ class BambuDriver:
             "video_stream": stream_url,
             "stream_url": stream_url,
         }
+
+        if "stg" in cached:
+            state_payload["stg"] = cached["stg"]
 
         if has_chamber:
             state_payload["chamber_temp"] = cached.get("chamber_temp", 0.0)
