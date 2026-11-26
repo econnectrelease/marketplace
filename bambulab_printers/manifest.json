@@ -1,0 +1,106 @@
+{
+  "manifest_version": "2.0",
+  "extension_id": "bambulab_printers",
+  "name": "Bambu Lab 3D Printers",
+  "version": "1.0.1",
+  "author": "Experience Team",
+  "contributor": "ryzen30xx",
+  "icon": "assets/bambulab.svg",
+  "categories": [
+    "3d_printer",
+    "3rd party"
+  ],
+  "description": "Điều khiển, theo dõi tiến độ in và xem camera trực tiếp thời gian thực cho toàn bộ các dòng máy in 3D Bambu Lab (A1, A1 Mini, P1P, P1S, X1C, X1E).",
+  "provider": {
+    "key": "bambulab",
+    "display_name": "Bambu Lab"
+  },
+  "package": {
+    "runtime": "python",
+    "entrypoint": "main.py",
+    "hooks": {
+      "validate_command": "validate_command",
+      "execute_command": "execute_command",
+      "probe_state": "probe_state",
+      "discover_devices": "discover_devices"
+    }
+  },
+  "device_schemas": [
+    {
+      "schema_id": "bambu_printer",
+      "device_type": "sensor",
+      "name": "Bambu Lab 3D Printer",
+      "default_name": "Máy in 3D Bambu Lab",
+      "description": "Giám sát tiến độ in, nhiệt độ đầu in và bàn in, điều khiển tạm dừng, tiếp tục, hủy lệnh in và xem camera buồng in trực tiếp.",
+      "display": {
+        "card_type": "sensor",
+        "capabilities": [
+          "value",
+          "value1",
+          "value2",
+          "value3",
+          "value4",
+          "value5",
+          "video_stream",
+          "snapshot",
+          "chamber_camera",
+          "power"
+        ],
+        "metrics": [
+          {
+            "slot": "value",
+            "label": "Trạng thái",
+            "type": "string",
+            "preferred": true
+          },
+          {
+            "slot": "value1",
+            "label": "Tiến độ in",
+            "unit": "%",
+            "type": "number",
+            "preferred": true
+          },
+          {
+            "slot": "value2",
+            "label": "Thời gian còn lại",
+            "unit": "phút",
+            "type": "number"
+          },
+          {
+            "slot": "value3",
+            "label": "Tên tác vụ in",
+            "type": "string"
+          },
+          {
+            "slot": "value4",
+            "label": "Nhiệt độ đầu in",
+            "unit": "°C",
+            "type": "number"
+          },
+          {
+            "slot": "value5",
+            "label": "Nhiệt độ bàn in",
+            "unit": "°C",
+            "type": "number"
+          }
+        ]
+      },
+      "config_schema": {
+        "fields": [
+          {
+            "key": "ip_address",
+            "label": "Địa chỉ IP máy in",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "access_code",
+            "label": "Mã truy cập LAN (Access Code)",
+            "type": "password",
+            "required": true
+          }
+        ]
+      }
+    }
+  ]
+}

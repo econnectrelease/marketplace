@@ -39,7 +39,7 @@ CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,59}$")
 GENERIC_METRIC_SLOT_PATTERN = re.compile(r"^value(?:[1-9][0-9]*)?$")
 SUPPORTED_STANDARD_CAPABILITIES = {
     "power", "brightness", "rgb", "color_temperature", "speed",
-    "temperature", "humidity", "value",
+    "temperature", "humidity", "value", "video_stream", "snapshot", "chamber_camera",
 }
 SUPPORTED_METRIC_VALUE_TYPES = {"number", "string", "boolean"}
 PYTHON_SYMBOL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

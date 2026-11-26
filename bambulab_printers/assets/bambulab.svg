@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" fill="none">
+  <!-- Background Badge -->
+  <rect width="256" height="256" rx="56" fill="#18181B"/>
+  
+  <!-- Bambu Lab Official Brandmark Motif -->
+  <!-- Left Column: Main Vertical Backbone -->
+  <rect x="52" y="44" width="40" height="168" rx="8" fill="#00AE42"/>
+  
+  <!-- Right Upper Loop Segment -->
+  <rect x="108" y="44" width="56" height="40" rx="8" fill="#00AE42"/>
+  <rect x="156" y="44" width="40" height="76" rx="8" fill="#00AE42"/>
+  <rect x="108" y="80" width="56" height="40" rx="8" fill="#00AE42"/>
+  
+  <!-- Right Lower Loop Segment -->
+  <rect x="108" y="136" width="56" height="40" rx="8" fill="#00AE42"/>
+  <rect x="156" y="136" width="40" height="76" rx="8" fill="#00AE42"/>
+  <rect x="108" y="172" width="56" height="40" rx="8" fill="#00AE42"/>
+  
+  <!-- Accent Precision Highlights -->
+  <path d="M56 48h16v160H56z" fill="#34D399" opacity="0.45"/>
+  <circle cx="216" cy="40" r="6" fill="#00AE42" opacity="0.8"/>
+</svg>
