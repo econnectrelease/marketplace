@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Đinh Trung Kiên. All rights reserved.
 """
 # [INPUT]: depends on ftplib, ssl, socket, io, os, zipfile, json, base64, re, math, threading, time, typing, logging
-# [OUTPUT]: exports ImplicitFTP_TLS, stream_3mf_to_printer, list_sd_files, extract_3mf_preview, clear_3mf_preview_cache, _3MF_PREVIEW_CACHE, simplify_points
-# [POS]: FTPS client module with Zero-Disk Cache, TLS Session Reuse, non-blocking background preview extraction, multi-object outer wall G-code parsing, and in-memory 3MF parsing for Bambu Lab SD card transfer
+# [OUTPUT]: exports ImplicitFTP_TLS, stream_3mf_to_printer, list_sd_files, extract_3mf_preview, clear_3mf_preview_cache, _3MF_PREVIEW_CACHE, simplify_points, chain_segments
+# [POS]: FTPS client module with Zero-Disk Cache, TLS Session Reuse, non-blocking background preview extraction, multi-object outer wall G-code parsing with segment chaining, and in-memory 3MF parsing for Bambu Lab SD card transfer
 # [PROTOCOL]: Update this header on change, then check GEMINI.md
 """
 
@@ -309,9 +309,10 @@ def simplify_points(pts: list[list[float]], min_dist: float = 0.5) -> list[list[
             simplified.append(pt)
 
     # If original loop was closed (end close to start), always close it
-    is_closed = math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]) < 1.0
+    is_closed = math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]) < 3.5
     if is_closed:
-        simplified.append(pts[-1])
+        if math.hypot(pts[-1][0] - simplified[-1][0], pts[-1][1] - simplified[-1][1]) > 0.05:
+            simplified.append(pts[-1])
     else:
         last = simplified[-1]
         dist = math.hypot(pts[-1][0] - last[0], pts[-1][1] - last[1])
@@ -323,13 +324,78 @@ def simplify_points(pts: list[list[float]], min_dist: float = 0.5) -> list[list[
     return [[round(p[0], 2), round(p[1], 2)] for p in simplified]
 
 
+def chain_segments(segments: list[list[list[float]]], max_gap: float = 3.5) -> list[list[list[float]]]:
+    """Chain contiguous or fragmented outer wall segments into closed loops or extended paths."""
+    if not segments:
+        return []
+    pool = [list(s) for s in segments if len(s) >= 2]
+    if not pool:
+        return []
+
+    def _pt_dist(p1: list[float], p2: list[float]) -> float:
+        return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
+    chains: list[list[list[float]]] = []
+    while pool:
+        chain = pool.pop(0)
+        extended = True
+        while extended:
+            extended = False
+            last_p = chain[-1]
+            first_p = chain[0]
+            best_idx = None
+            best_d = max_gap
+            mode = None
+
+            for j, seg in enumerate(pool):
+                d = _pt_dist(last_p, seg[0])
+                if d < best_d:
+                    best_d = d
+                    best_idx = j
+                    mode = "append"
+                d = _pt_dist(last_p, seg[-1])
+                if d < best_d:
+                    best_d = d
+                    best_idx = j
+                    mode = "append_rev"
+                d = _pt_dist(seg[-1], first_p)
+                if d < best_d:
+                    best_d = d
+                    best_idx = j
+                    mode = "prepend"
+                d = _pt_dist(seg[0], first_p)
+                if d < best_d:
+                    best_d = d
+                    best_idx = j
+                    mode = "prepend_rev"
+
+            if best_idx is not None:
+                seg = pool.pop(best_idx)
+                if mode == "append":
+                    chain.extend(seg)
+                elif mode == "append_rev":
+                    chain.extend(reversed(seg))
+                elif mode == "prepend":
+                    chain = seg + chain
+                elif mode == "prepend_rev":
+                    chain = list(reversed(seg)) + chain
+                extended = True
+
+        if len(chain) >= 3 and 0.05 < _pt_dist(chain[0], chain[-1]) < max_gap:
+            chain.append(list(chain[0]))
+        chains.append(chain)
+
+    return chains
+
+
 def _parse_gcode_layers(
     gcode_text: str,
 ) -> tuple[int, float, float, list[dict[str, Any]]]:
     """Parse BambuStudio/OrcaSlicer G-code to extract real outer wall loops per layer.
 
     Supports multiple discrete objects on the build plate (e.g. Removable Bucket and Holder).
-    Sorts loops by 2D bbox area, filters loops > 2.0 mm², keeps top 6-8 loops per layer,
+    Chains fragmented perimeter segments up to 3.5mm, sorts loops by 2D bbox area,
+    keeps up to 64 loops per layer without dropping slats/louvers, interpolates circular arcs (G2/G3),
     and simplifies points to keep payload compact and 60fps fast.
     """
     header_total = re.search(r";\s*total layer number:\s*(\d+)", gcode_text, re.IGNORECASE)
@@ -355,10 +421,15 @@ def _parse_gcode_layers(
     in_block = False
     started = False
 
-    layer_marker = re.compile(
-        r"^\s*;\s*(?:layer num/total_layer_count:\s*\d+/\d+|CHANGE_LAYER|LAYER_CHANGE|AFTER_LAYER_CHANGE|BEFORE_LAYER_CHANGE|LAYER:\s*\d+)",
-        re.IGNORECASE,
-    )
+    has_layer_num = bool(re.search(r";\s*layer num/total_layer_count:\s*\d+/\d+", gcode_text, re.IGNORECASE))
+    if has_layer_num:
+        layer_marker = re.compile(r"^\s*;\s*layer num/total_layer_count:\s*(\d+)/(\d+)", re.IGNORECASE)
+    else:
+        layer_marker = re.compile(
+            r"^\s*;\s*(?:CHANGE_LAYER|LAYER_CHANGE|AFTER_LAYER_CHANGE|BEFORE_LAYER_CHANGE|LAYER:\s*\d+)",
+            re.IGNORECASE,
+        )
+
     object_marker = re.compile(
         r"^\s*;\s*(?:start printing object|stop printing object|printing object)",
         re.IGNORECASE,
@@ -388,8 +459,8 @@ def _parse_gcode_layers(
         nonlocal outer_wall_loops, all_loops, layer_z_samples, cur_loop
         finish_loop()
 
-        candidate_loops = outer_wall_loops if outer_wall_loops else all_loops
-        if not candidate_loops:
+        raw_segments = outer_wall_loops if outer_wall_loops else all_loops
+        if not raw_segments:
             outer_wall_loops = []
             all_loops = []
             layer_z_samples = []
@@ -397,17 +468,23 @@ def _parse_gcode_layers(
 
         lz = min(layer_z_samples) if layer_z_samples else (cur_z if cur_z is not None else 0.0)
 
-        # Filter loops with area > 2.0 mm²
-        filtered = [l for l in candidate_loops if loop_bbox_area(l) > 2.0]
-        if not filtered and candidate_loops:
-            filtered = candidate_loops
+        chained = chain_segments(raw_segments, max_gap=3.5)
+        valid_loops = []
+        for ch in chained:
+            if len(ch) < 2:
+                continue
+            xs = [p[0] for p in ch]
+            ys = [p[1] for p in ch]
+            diag = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+            if diag >= 1.0:
+                valid_loops.append(ch)
 
-        # Sort loops by bbox area descending
-        sorted_loops = sorted(filtered, key=loop_bbox_area, reverse=True)
-        # Take top 8 loops
-        sig_raw = sorted_loops[:8]
+        if not valid_loops and chained:
+            valid_loops = [ch for ch in chained if len(ch) >= 2]
 
-        # Simplify loops
+        sorted_loops = sorted(valid_loops, key=loop_bbox_area, reverse=True)
+        sig_raw = sorted_loops[:64]
+
         sig_loops: list[list[list[float]]] = []
         for l in sig_raw:
             simplified = simplify_points(l, min_dist=0.5)
@@ -460,7 +537,7 @@ def _parse_gcode_layers(
         if feat_match:
             finish_loop()
             feat_name = feat_match.group(1).strip().lower()
-            if "outer wall" in feat_name or "wall-outer" in feat_name or "external perimeter" in feat_name:
+            if any(k in feat_name for k in ("outer wall", "wall-outer", "external perimeter", "overhang wall", "floating vertical shell")):
                 cur_outer_wall = True
             else:
                 cur_outer_wall = False
@@ -491,10 +568,13 @@ def _parse_gcode_layers(
         ):
             cmd_body = trimmed.split(";", 1)[0]
             parts = cmd_body.split()
+            cmd = parts[0]
             nx = cur_x
             ny = cur_y
             nz = cur_z
             e_val: float | None = None
+            arc_i: float | None = None
+            arc_j: float | None = None
 
             for p in parts[1:]:
                 if p.startswith("X"):
@@ -515,6 +595,16 @@ def _parse_gcode_layers(
                 elif p.startswith("E"):
                     try:
                         e_val = float(p[1:])
+                    except ValueError:
+                        pass
+                elif p.startswith("I"):
+                    try:
+                        arc_i = float(p[1:])
+                    except ValueError:
+                        pass
+                elif p.startswith("J"):
+                    try:
+                        arc_j = float(p[1:])
                     except ValueError:
                         pass
 
@@ -542,6 +632,27 @@ def _parse_gcode_layers(
                 if is_extruding:
                     if not cur_loop:
                         cur_loop.append([round(cur_x, 2), round(cur_y, 2)])
+                    if (cmd == "G2" or cmd == "G3") and arc_i is not None and arc_j is not None:
+                        is_cw = cmd == "G2"
+                        cen_x = cur_x + arc_i
+                        cen_y = cur_y + arc_j
+                        r = math.hypot(arc_i, arc_j)
+                        if r >= 0.2:
+                            sa = math.atan2(cur_y - cen_y, cur_x - cen_x)
+                            ea = math.atan2(ny - cen_y, nx - cen_x)
+                            if is_cw:
+                                if ea >= sa:
+                                    ea -= 2 * math.pi
+                                diff = sa - ea
+                            else:
+                                if ea <= sa:
+                                    ea += 2 * math.pi
+                                diff = ea - sa
+                            steps = max(1, min(8, int((r * diff) / 1.5)))
+                            for s in range(1, steps):
+                                frac = s / steps
+                                ang = sa - frac * diff if is_cw else sa + frac * diff
+                                cur_loop.append([round(cen_x + r * math.cos(ang), 2), round(cen_y + r * math.sin(ang), 2)])
                     cur_loop.append([round(nx, 2), round(ny, 2)])
                     if cur_z is not None:
                         layer_z_samples.append(cur_z)
