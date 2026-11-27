@@ -3,7 +3,7 @@
 # [INPUT]: depends on bambu_mqtt, bambu_ftps, bambu_camera, os, socket, io, threading, time, urllib.parse, logging, typing
 # [OUTPUT]: exports BambuDriver, resolve_printer_identity, get_or_create_mqtt_client, get_or_create_camera_adapter, validate_command, execute_command, probe_state, discover_devices, detect_chamber_camera_support, ExtensionRuntimeError
 # [POS]: Main hardware orchestration driver for Bambu Lab 3D printers and chamber cameras
-# [PROTOCOL]: Update this header on change
+# [PROTOCOL]: Update this header on change, then check GEMINI.md
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import os
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 try:
@@ -33,7 +33,7 @@ except Exception:
             self.connection_failed = connection_failed
 
 from bambu_camera import BambuCameraAdapter
-from bambu_ftps import stream_3mf_to_printer
+from bambu_ftps import _3MF_PREVIEW_CACHE, extract_3mf_preview, list_sd_files, stream_3mf_to_printer
 from bambu_mqtt import (
     BambuMQTTClient,
     detect_bambu_model,
@@ -445,6 +445,17 @@ def get_or_create_camera_adapter(config: dict[str, Any]) -> BambuCameraAdapter:
         return adapter
 
 
+def _extract_file_stream(command: dict[str, Any]) -> io.BytesIO | BinaryIO:
+    """Extract an in-memory binary stream from a command dict."""
+    file_stream_obj = command.get("file_stream")
+    if file_stream_obj is not None and hasattr(file_stream_obj, "read"):
+        return file_stream_obj
+    raw_data = command.get("file_data")
+    if isinstance(raw_data, (bytes, bytearray)):
+        return io.BytesIO(raw_data)
+    return io.BytesIO(str(raw_data or "").encode("utf-8"))
+
+
 class BambuDriver:
     """Universal controller for Bambu Lab 3D printers and companion chamber cameras."""
 
@@ -458,6 +469,9 @@ class BambuDriver:
         - stop: Cancel current print job
         - set_power / chamber_light / power / E-Connect automation toggle: Turn chamber light on or off
         - upload_3mf: Stream sliced .3mf file from memory
+        - list_files / list_sd_files / get_files: List .3mf/.gcode files on SD card
+        - start_print / print_file: Start print job from SD card file
+        - upload_and_print / upload_print: Upload sliced file and initiate printing
         """
         if not isinstance(command, dict):
             raise ValueError("Command payload must be a JSON object.")
@@ -501,6 +515,15 @@ class BambuDriver:
             "set_aux_fan",
             "set_chamber_fan",
             "gcode",
+            "list_files",
+            "list_sd_files",
+            "get_files",
+            "start_print",
+            "print_file",
+            "upload_and_print",
+            "upload_print",
+            "get_file_preview",
+            "get_print_preview",
         }
         if action not in valid_actions:
             raise ValueError(f"Unsupported Bambu command action '{action}'. Valid: {sorted(valid_actions)}")
@@ -577,6 +600,23 @@ class BambuDriver:
             if "file_data" not in command and "file_stream" not in command:
                 raise ValueError("Action 'upload_3mf' requires in-memory 'file_data' or 'file_stream'.")
 
+        elif action in {"start_print", "print_file"}:
+            fn = command.get("filename") or command.get("param") or command.get("value")
+            if not fn or not isinstance(fn, str):
+                raise ValueError(f"Action '{action}' requires a non-empty string 'filename' or 'param'.")
+
+        elif action in {"upload_and_print", "upload_print"}:
+            filename = command.get("filename") or command.get("param")
+            if not filename or not isinstance(filename, str):
+                raise ValueError(f"Action '{action}' requires a non-empty string 'filename'.")
+            if not (filename.endswith(".3mf") or filename.endswith(".gcode")):
+                raise ValueError(f"Action '{action}' filename must end with .3mf or .gcode.")
+            raw_parts = filename.replace("\\", "/").split("/")
+            if ".." in raw_parts:
+                raise ValueError(f"Path traversal detected in {action} filename '{filename}'.")
+            if "file_data" not in command and "file_stream" not in command:
+                raise ValueError(f"Action '{action}' requires in-memory 'file_data' or 'file_stream'.")
+
     @staticmethod
     def execute_command(device: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
         """Execute a validated command on the target Bambu Lab device."""
@@ -618,16 +658,50 @@ class BambuDriver:
         # Handle Printer Schema Commands
         client = get_or_create_mqtt_client(effective_config)
 
+        if action == "clear_error":
+            client.clear_error()
+            return BambuDriver.probe_state(device)
+
+        if client.last_error and (
+            "BAMBU_DEV_MODE_REQUIRED" in client.last_error
+            or "0500-0500-0001-0007" in client.last_error
+            or "84033543" in client.last_error
+        ):
+            raise ExtensionRuntimeError(client.last_error, mark_offline=False)
+
         # Clear any prior recorded error on new command execution so old errors do not permanently block commands
         client.clear_error()
+
+        if action in ("list_files", "list_sd_files", "get_files"):
+            ip = str(effective_config.get("ip_address"))
+            access_code = str(effective_config.get("access_code"))
+            port = int(effective_config["ftps_port"]) if effective_config.get("ftps_port") else None
+            files = list_sd_files(ip, access_code, port=port)
+            client._last_state["sd_files"] = files
+            return {"status": "ok", "files": files}
+
+        if action in ("get_file_preview", "get_print_preview"):
+            ip = str(effective_config.get("ip_address") or "")
+            access_code = str(effective_config.get("access_code") or "")
+            port = int(effective_config["ftps_port"]) if effective_config.get("ftps_port") else None
+            cached = client.get_latest_state()
+            target_name = (
+                command.get("filename")
+                or command.get("subtask_name")
+                or command.get("param")
+                or cached.get("subtask_name")
+                or cached.get("gcode_file")
+                or ""
+            )
+            if not str(target_name).strip():
+                return {"status": "ok", "preview": {"real_preview_available": False}}
+            preview = extract_3mf_preview(ip, access_code, str(target_name).strip(), port=port)
+            return {"status": "ok", "preview": preview}
 
         is_automation_toggle = str(command.get("kind") or "").strip().lower() == "action" and "value" in command
 
         cmd_ok = True
-        if action == "clear_error":
-            client.clear_error()
-            return BambuDriver.probe_state(device)
-        elif is_automation_toggle:
+        if is_automation_toggle:
             cmd_ok = client.set_chamber_light(bool(command["value"]))
         elif "power" in command:
             power_val = bool(command["power"])
@@ -705,27 +779,57 @@ class BambuDriver:
         elif action == "gcode":
             gcode_line = str(command.get("gcode") or command.get("param") or command.get("value") or "")
             cmd_ok = client.send_gcode(gcode_line)
-        elif action == "upload_3mf":
-            filename = str(command["filename"])
-            raw_data = command.get("file_data")
-            file_stream_obj = command.get("file_stream")
-            if file_stream_obj is not None and hasattr(file_stream_obj, "read"):
-                stream = file_stream_obj
-            elif isinstance(raw_data, (bytes, bytearray)):
-                stream = io.BytesIO(raw_data)
-            else:
-                stream = io.BytesIO(str(raw_data or "").encode("utf-8"))
-
+        elif action in ("start_print", "print_file"):
+            filename = str(command.get("filename") or command.get("param") or "")
+            plate_index = int(command.get("plate_index", 1))
+            bed_leveling = bool(command.get("bed_leveling", True))
+            use_ams = bool(command.get("use_ams", False))
+            flow_cali = bool(command.get("flow_cali", False))
+            timelapse = bool(command.get("timelapse", False))
+            cmd_ok = client.start_print_file(
+                filename=filename,
+                plate_index=plate_index,
+                use_ams=use_ams,
+                bed_leveling=bed_leveling,
+                flow_cali=flow_cali,
+                timelapse=timelapse,
+            )
+        elif action in ("upload_and_print", "upload_print"):
+            filename = str(command.get("filename") or command.get("param") or "")
+            stream = _extract_file_stream(command)
             ip = str(effective_config.get("ip_address"))
             code = str(effective_config.get("access_code"))
-            stream_3mf_to_printer(ip, code, stream, filename)
+            port = int(effective_config["ftps_port"]) if effective_config.get("ftps_port") else None
+            stream_3mf_to_printer(ip, code, stream, filename, port=port)
+
+            plate_index = int(command.get("plate_index", 1))
+            bed_leveling = bool(command.get("bed_leveling", True))
+            use_ams = bool(command.get("use_ams", False))
+            flow_cali = bool(command.get("flow_cali", False))
+            timelapse = bool(command.get("timelapse", False))
+            cmd_ok = client.start_print_file(
+                filename=filename,
+                plate_index=plate_index,
+                use_ams=use_ams,
+                bed_leveling=bed_leveling,
+                flow_cali=flow_cali,
+                timelapse=timelapse,
+            )
+        elif action == "upload_3mf":
+            filename = str(command["filename"])
+            stream = _extract_file_stream(command)
+            ip = str(effective_config.get("ip_address"))
+            code = str(effective_config.get("access_code"))
+            port = int(effective_config["ftps_port"]) if effective_config.get("ftps_port") else None
+            stream_3mf_to_printer(ip, code, stream, filename, port=port)
 
         if not cmd_ok:
-            if client.last_error and ("BAMBU_DEV_MODE_REQUIRED" in client.last_error or "84033543" in client.last_error):
-                raise ExtensionRuntimeError(
-                    "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
-                    mark_offline=False,
-                )
+            if client.last_error and (
+                "BAMBU_DEV_MODE_REQUIRED" in client.last_error
+                or "0500-0500-0001-0007" in client.last_error
+                or "84033543" in client.last_error
+            ):
+                raise ExtensionRuntimeError(client.last_error, mark_offline=False)
             if client.last_error and "ACS" in client.last_error:
                 raise ExtensionRuntimeError(
                     f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System: {client.last_error}",
@@ -737,11 +841,12 @@ class BambuDriver:
                 connection_failed=True,
             )
 
-        if client.last_error and ("BAMBU_DEV_MODE_REQUIRED" in client.last_error or "84033543" in client.last_error):
-            raise ExtensionRuntimeError(
-                "Máy in Bambu Lab từ chối lệnh (err_code: 84033543). Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' (Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN.",
-                mark_offline=False,
-            )
+        if client.last_error and (
+            "BAMBU_DEV_MODE_REQUIRED" in client.last_error
+            or "0500-0500-0001-0007" in client.last_error
+            or "84033543" in client.last_error
+        ):
+            raise ExtensionRuntimeError(client.last_error, mark_offline=False)
         if client.last_error and "ACS" in client.last_error:
             raise ExtensionRuntimeError(
                 f"Bambu Lab printer command '{action or 'toggle'}' blocked by Access Control System: {client.last_error}",
@@ -832,6 +937,10 @@ class BambuDriver:
             "chamber_camera_supported": True,
             "video_stream": stream_url,
             "stream_url": stream_url,
+            "dev_mode_required": cached.get("dev_mode_required", False),
+            "last_error": cached.get("last_error") or client.last_error,
+            "hms_errors": cached.get("hms_errors", []),
+            "sd_files": cached.get("sd_files", []),
         }
 
         if "stg" in cached:
@@ -839,6 +948,30 @@ class BambuDriver:
 
         if has_chamber:
             state_payload["chamber_temp"] = cached.get("chamber_temp", 0.0)
+
+        # 3MF file and slicer preview extraction
+        subtask_name = str(cached.get("subtask_name") or cached.get("gcode_file") or "").strip()
+        if subtask_name:
+            try:
+                ip = str(effective_config.get("ip_address") or "")
+                access_code = str(effective_config.get("access_code") or "")
+                ftps_port = int(effective_config["ftps_port"]) if effective_config.get("ftps_port") else None
+                preview = extract_3mf_preview(ip, access_code, subtask_name, port=ftps_port, non_blocking=True)
+                if preview and (preview.get("thumbnail") or preview.get("layers")):
+                    state_payload["model_thumbnail"] = preview.get("thumbnail")
+                    state_payload["model_top_view"] = preview.get("top_view")
+                    state_payload["model_bbox"] = preview.get("bbox")
+                    state_payload["model_filament_colors"] = preview.get("filament_colors")
+                    state_payload["model_layers"] = preview.get("layers", [])
+                    state_payload["real_preview_available"] = True
+                    state_payload["max_z"] = preview.get("max_z", 0.0)
+                    if state_payload.get("total_layer_num", 0) <= 0 and preview.get("total_layers", 0) > 0:
+                        state_payload["total_layer_num"] = preview["total_layers"]
+                elif preview and preview.get("loading"):
+                    state_payload["model_loading"] = True
+                    state_payload["real_preview_available"] = False
+            except Exception as preview_err:
+                logger.debug("Failed extracting 3MF preview in probe_state for %s: %s", subtask_name, preview_err)
 
         return {
             "conn_status": "online" if client.is_connected else "offline",

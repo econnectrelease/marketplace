@@ -63,3 +63,9 @@ __pycache__/
 # Explicitly allow GitHub Actions workflows & CI scripts
 !/.github/
 !/.github/**
+
+# AI documentation blacklist
+GEMINI.md
+CLAUDE.md
+AGENTS.md
+PRD.md

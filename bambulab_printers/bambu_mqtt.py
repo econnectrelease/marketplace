@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Đinh Trung Kiên. All rights reserved.
 """
 # [INPUT]: depends on ipaddress, socket, ssl, json, os, time, threading, logging, typing (and optional cryptography, paho.mqtt.client)
-# [OUTPUT]: exports BambuMQTTClient, NotificationService, BAMBU_STAGE_MAP, detect_bambu_model, detect_chamber_camera_support, get_bambu_model_capabilities, resolve_serial_from_tls, is_valid_bambu_serial
+# [OUTPUT]: exports BambuMQTTClient, NotificationService, BAMBU_STAGE_MAP, detect_bambu_model, detect_chamber_camera_support, get_bambu_model_capabilities, resolve_serial_from_tls, is_valid_bambu_serial, format_hms_code
 # [POS]: MQTT telemetry, TLS serial resolution, and command transport client for Bambu Lab 3D printers
-# [PROTOCOL]: Update this header on change
+# [PROTOCOL]: Update this header on change, then check GEMINI.md
 """
 
 from __future__ import annotations
@@ -245,6 +245,14 @@ def _parse_fan_speed(raw: Any, fallback: int = 0) -> int:
         return fallback
 
 
+def format_hms_code(attr: int, code: int) -> str:
+    """Format Bambu HMS error attr and code integers into standard XXXX-XXXX-XXXX-XXXX string."""
+    return (
+        f"{(attr >> 16) & 0xFFFF:04X}-{(attr) & 0xFFFF:04X}-"
+        f"{(code >> 16) & 0xFFFF:04X}-{(code) & 0xFFFF:04X}"
+    )
+
+
 def is_valid_bambu_serial(candidate: str | None) -> bool:
     """Return True if candidate matches Bambu Lab serial constraints (alnum, len>=10, not IP)."""
     if not isinstance(candidate, str):
@@ -450,6 +458,10 @@ class BambuMQTTClient:
             "has_cooling_fan": caps["has_cooling_fan"],
             "model": self.model,
             "last_updated": 0,
+            "dev_mode_required": False,
+            "hms_errors": [],
+            "last_error": None,
+            "sd_files": [],
         }
         self._previous_gcode_state: str = "IDLE"
         self._last_error: str | None = None
@@ -483,6 +495,9 @@ class BambuMQTTClient:
         with self._lock:
             self._last_error = None
             self._auth_error = None
+            self._last_state["dev_mode_required"] = False
+            self._last_state["last_error"] = None
+            self._last_state["hms_errors"] = []
 
     @property
     def is_connected(self) -> bool:
@@ -848,15 +863,52 @@ class BambuMQTTClient:
             ):
                 is_dev_mode_err = True
 
+            # Parse HMS error array from printer telemetry
+            has_hms_key = ("hms" in print_data) or ("hms" in payload)
+            hms_source = print_data.get("hms") if "hms" in print_data else payload.get("hms")
+            hms_errors: list[str] = []
+
+            if has_hms_key and isinstance(hms_source, list):
+                for item in hms_source:
+                    if isinstance(item, dict):
+                        attr = item.get("attr")
+                        code = item.get("code")
+                        if attr is not None and code is not None:
+                            try:
+                                attr_int = int(attr, 16) if isinstance(attr, str) and str(attr).startswith("0x") else int(attr)
+                                code_int = int(code, 16) if isinstance(code, str) and str(code).startswith("0x") else int(code)
+                                hms_code = format_hms_code(attr_int, code_int)
+                                if hms_code not in hms_errors:
+                                    hms_errors.append(hms_code)
+                                if (attr_int == 0x05000500 and code_int == 0x00010007) or hms_code == "0500-0500-0001-0007":
+                                    is_dev_mode_err = True
+                            except (ValueError, TypeError):
+                                pass
+                        for v in item.values():
+                            if "0500-0500-0001-0007" in str(v):
+                                is_dev_mode_err = True
+                                if "0500-0500-0001-0007" not in hms_errors:
+                                    hms_errors.append("0500-0500-0001-0007")
+                    elif isinstance(item, str):
+                        clean_item = item.strip().replace("HMS_", "")
+                        if clean_item not in hms_errors:
+                            hms_errors.append(clean_item)
+                        if "0500-0500-0001-0007" in clean_item:
+                            is_dev_mode_err = True
+            elif not has_hms_key:
+                hms_errors = list(self._last_state.get("hms_errors", []))
+                if any(e == "0500-0500-0001-0007" for e in hms_errors):
+                    is_dev_mode_err = True
+
             # Check for Access Control System (ACS) denial on firmware 01.05.00.00+
             result_code = str(print_data.get("result", "")).upper()
             reason_code = str(print_data.get("reason", "")).upper()
 
             if is_dev_mode_err:
                 self._last_error = (
-                    "BAMBU_DEV_MODE_REQUIRED: Máy in Bambu Lab từ chối lệnh (err_code: 84033543). "
-                    "Vui lòng vào Cài đặt màn hình máy in -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' "
-                    "(Developer Mode) và khởi động lại máy in để cho phép điều khiển qua mạng LAN."
+                    "BAMBU_DEV_MODE_REQUIRED: Máy in Bambu Lab từ chối lệnh qua mạng LAN (Lỗi HMS_0500-0500-0001-0007: MQTT Command verification failed). "
+                    "Vui lòng vào màn hình cảm ứng máy in -> Cài đặt (⚙️) -> Mạng (WLAN) -> Bật 'Chế độ nhà phát triển' "
+                    "(Developer Mode) hoặc 'LAN Only Mode' và khởi động lại máy in để cho phép điều khiển qua E-Connect."
                 )
                 logger.warning("Bambu printer dev mode restriction on %s: %s", self.ip, self._last_error)
             elif result_code == "FAILED" and any(
@@ -864,7 +916,13 @@ class BambuMQTTClient:
             ):
                 self._last_error = f"ACS_DENIED: {reason_code or 'Access Control System blocked command'}"
                 logger.warning("Bambu printer ACS restriction on %s: %s", self.ip, self._last_error)
-            elif result_code == "SUCCESS":
+            elif result_code == "SUCCESS" or (
+                has_hms_key
+                and not hms_errors
+                and not is_dev_mode_err
+                and self._last_error
+                and "BAMBU_DEV_MODE_REQUIRED" in self._last_error
+            ):
                 self._last_error = None
 
             # State transition alert trigger
@@ -910,6 +968,9 @@ class BambuMQTTClient:
                 "has_cooling_fan": has_cooling_fan,
                 "model": self.model,
                 "last_updated": time.time(),
+                "dev_mode_required": bool(is_dev_mode_err),
+                "hms_errors": hms_errors,
+                "last_error": self._last_error,
             })
 
             self._telemetry_event.set()
@@ -918,7 +979,8 @@ class BambuMQTTClient:
     def publish_request(self, payload: dict[str, Any]) -> bool:
         """Publish a command JSON payload to device/{serial}/request."""
         with self._lock:
-            self._last_error = None
+            if self._last_error and not any(k in self._last_error for k in ("BAMBU_DEV_MODE_REQUIRED", "0500-0500-0001-0007", "84033543")):
+                self._last_error = None
 
         for section in payload.values():
             if isinstance(section, dict) and section.get("sequence_id") == "0":
@@ -982,6 +1044,49 @@ class BambuMQTTClient:
                 "command": "stop",
             }
         })
+
+    def start_print_file(
+        self,
+        filename: str,
+        plate_index: int = 1,
+        use_ams: bool = False,
+        bed_leveling: bool = True,
+        flow_cali: bool = False,
+        timelapse: bool = False,
+    ) -> bool:
+        """Initiate 3D printing of a .3mf or .gcode file stored on the printer SD card."""
+        clean_name = str(filename or "").replace("\\", "/").strip()
+        if clean_name.startswith("/sdcard/"):
+            clean_name = clean_name[len("/sdcard/"):]
+        clean_name = clean_name.lstrip("/")
+
+        if not clean_name:
+            return False
+
+        if clean_name.lower().endswith(".gcode"):
+            payload = {
+                "print": {
+                    "sequence_id": self._next_sequence_id(),
+                    "command": "gcode_file",
+                    "param": f"/sdcard/{clean_name}",
+                }
+            }
+        else:
+            payload = {
+                "print": {
+                    "sequence_id": self._next_sequence_id(),
+                    "command": "project_file",
+                    "url": f"file:///sdcard/{clean_name}",
+                    "param": f"Metadata/plate_{plate_index}.gcode",
+                    "subtask_id": "0",
+                    "subtask_name": clean_name,
+                    "use_ams": use_ams,
+                    "timelapse": timelapse,
+                    "flow_cali": flow_cali,
+                    "bed_leveling": bed_leveling,
+                }
+            }
+        return self.publish_request(payload)
 
     def set_chamber_light(self, on: bool) -> bool:
         """Toggle chamber lighting."""
